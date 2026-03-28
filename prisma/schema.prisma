@@ -1,0 +1,296 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+enum Role {
+  ADMIN
+  SALES_REP
+}
+
+enum LeadStageOutcome {
+  NONE
+  WON
+  LOST
+}
+
+model LeadPipelineStage {
+  id        String           @id @default(cuid())
+  key       String           @unique
+  label     String
+  sortOrder Int              @default(0)
+  isActive  Boolean          @default(true)
+  outcome   LeadStageOutcome @default(NONE)
+  leads     Lead[]
+  defaultForCaptureForms LeadCaptureForm[] @relation("LeadCaptureDefaultStage")
+  createdAt DateTime         @default(now())
+  updatedAt DateTime         @updatedAt
+}
+
+model ProjectStatusOption {
+  id                     String    @id @default(cuid())
+  key                    String    @unique
+  label                  String
+  sortOrder              Int       @default(0)
+  isActive               Boolean   @default(true)
+  isActiveInstallation   Boolean   @default(false)
+  projects               Project[]
+  createdAt              DateTime  @default(now())
+  updatedAt              DateTime  @updatedAt
+}
+
+model ProposalStatusOption {
+  id               String     @id @default(cuid())
+  key              String     @unique
+  label            String
+  sortOrder        Int        @default(0)
+  isActive         Boolean    @default(true)
+  blocksConversion Boolean    @default(false)
+  proposals        Proposal[]
+  createdAt        DateTime   @default(now())
+  updatedAt        DateTime   @updatedAt
+}
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  name         String
+  passwordHash String
+  role         Role     @default(SALES_REP)
+  notifyProposalAccepted Boolean @default(false)
+  leads        Lead[]
+  tasks        Task[]
+  leadNotes    LeadNote[] @relation("LeadNoteAuthor")
+  notifications Notification[]
+  assignedCaptureForms LeadCaptureForm[] @relation("LeadCaptureAssignTo")
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
+model SolarPanel {
+  id              String     @id @default(cuid())
+  manufacturer    String
+  model           String
+  wattage         Int
+  efficiency      Float
+  areaSqM         Float
+  weightKg        Float
+  warrantyYears   Int
+  temperatureCoef Float
+  voltageVmp      Float
+  currentImp      Float
+  costPerPanel    Float
+  isActive        Boolean    @default(true)
+  createdAt       DateTime   @default(now())
+  updatedAt       DateTime   @updatedAt
+  proposals       Proposal[]
+}
+
+model Battery {
+  id            String     @id @default(cuid())
+  manufacturer  String
+  model         String
+  capacityKwh   Float
+  usableKwh     Float
+  powerKw       Float
+  peakPowerKw   Float
+  voltage       Float
+  cycleLife     Int
+  warrantyYears Int
+  roundTripEff  Float
+  weightKg      Float
+  cost          Float
+  isActive      Boolean    @default(true)
+  createdAt     DateTime   @default(now())
+  updatedAt     DateTime   @updatedAt
+  proposals     Proposal[]
+}
+
+model Inverter {
+  id              String     @id @default(cuid())
+  manufacturer    String
+  model           String
+  type            String
+  ratedPowerKw    Float
+  maxInputVoltage Float
+  efficiency      Float
+  mpptChannels    Int
+  warrantyYears   Int
+  weightKg        Float
+  cost            Float
+  isActive        Boolean    @default(true)
+  createdAt       DateTime   @default(now())
+  updatedAt       DateTime   @updatedAt
+  proposals       Proposal[]
+}
+
+model LeadCaptureForm {
+  id             String             @id @default(cuid())
+  name           String
+  slug           String             @unique
+  description    String?
+  fields         Json
+  isActive       Boolean            @default(true)
+  defaultStageId String?
+  defaultStage   LeadPipelineStage? @relation("LeadCaptureDefaultStage", fields: [defaultStageId], references: [id])
+  assignToUserId String?
+  assignToUser   User?              @relation("LeadCaptureAssignTo", fields: [assignToUserId], references: [id])
+  successMessage String?
+  brandColor     String?            @default("#f59e0b")
+  leads          Lead[]
+  createdAt      DateTime           @default(now())
+  updatedAt      DateTime           @updatedAt
+}
+
+model Lead {
+  id             String             @id @default(cuid())
+  name           String
+  email          String?
+  phone          String?
+  address        String?
+  latitude       Float?
+  longitude      Float?
+  stageId        String
+  pipelineStage  LeadPipelineStage  @relation(fields: [stageId], references: [id])
+  notes          String?
+  assignedTo     User?              @relation(fields: [assignedToId], references: [id])
+  assignedToId   String?
+  customFields   Json?
+  sourceFormId   String?
+  sourceForm     LeadCaptureForm?   @relation(fields: [sourceFormId], references: [id], onDelete: SetNull)
+  project        Project?
+  proposals      Proposal[]
+  leadNotes      LeadNote[]
+  tasks          Task[]
+  createdAt      DateTime           @default(now())
+  updatedAt      DateTime           @updatedAt
+}
+
+model LeadNote {
+  id          String   @id @default(cuid())
+  content     String
+  lead        Lead     @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  leadId      String
+  createdBy   User     @relation("LeadNoteAuthor", fields: [createdById], references: [id])
+  createdById String
+  createdAt   DateTime @default(now())
+}
+
+model Project {
+  id               String              @id @default(cuid())
+  name             String
+  statusId         String
+  projectStatus    ProjectStatusOption   @relation(fields: [statusId], references: [id])
+  systemSizeKw     Float?
+  panelCount       Int?
+  estimatedCost    Float?
+  annualOutput     Float?
+  lead             Lead                @relation(fields: [leadId], references: [id])
+  leadId           String              @unique
+  tasks            Task[]
+  proposals        Proposal[]
+  solarData        Json?
+  createdAt        DateTime            @default(now())
+  updatedAt        DateTime            @updatedAt
+}
+
+model Proposal {
+  id            String   @id @default(cuid())
+  title         String
+  systemSizeKw  Float
+  panelCount    Int
+  panelWattage  Int
+  batteryOption String?
+  inverter      String?
+  installCost   Float
+  annualSavings Float
+  paybackYears  Float
+  roiPercent    Float
+  statusId      String
+  proposalStatus ProposalStatusOption @relation(fields: [statusId], references: [id])
+  lead          Lead     @relation(fields: [leadId], references: [id])
+  leadId        String
+  project       Project? @relation(fields: [projectId], references: [id])
+  projectId     String?
+  pdfUrl        String?
+
+  roofAreaSqM         Float?
+  maxSunshineHours    Float?
+  solarPotentialKwh   Float?
+  carbonOffsetKg      Float?
+  imageryQuality      String?
+  roofSegments        Json?
+  panelConfigs        Json?
+  sunshineQuantiles   Json?
+
+  solarPanelId String?
+  solarPanel   SolarPanel? @relation(fields: [solarPanelId], references: [id])
+  batteryId    String?
+  battery      Battery?    @relation(fields: [batteryId], references: [id])
+  inverterId   String?
+  inverterRel  Inverter?   @relation(fields: [inverterId], references: [id])
+
+  mapSnapshotBase64 String? @db.Text
+
+  latitude    Float?
+  longitude   Float?
+  address     String?
+
+  yearlyProductionKwh Float?
+  monthlyBillSavings  Float?
+  lifetimeSavings     Float?
+  grossCost           Float?
+  incentiveAmount     Float?
+  yearlyBreakdown     Json?
+
+  publicShareToken        String? @unique
+  publicSharePasswordHash String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Task {
+  id           String    @id @default(cuid())
+  title        String
+  description  String?
+  completed    Boolean   @default(false)
+  dueDate      DateTime?
+  reminderAt   DateTime?
+  reminderSent Boolean   @default(false)
+  project      Project?  @relation(fields: [projectId], references: [id])
+  projectId    String?
+  lead         Lead?     @relation(fields: [leadId], references: [id])
+  leadId       String?
+  assignedTo   User?     @relation(fields: [assignedToId], references: [id])
+  assignedToId String?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+}
+
+model Notification {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type      String
+  title     String
+  body      String?
+  link      String?
+  read      Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  @@index([userId, read, createdAt])
+}
+
+model WhiteLabelSettings {
+  id             String  @id @default("singleton")
+  logoUrl        String?
+  faviconUrl     String?
+  themeColor     String  @default("#f59e0b")
+  companyName    String  @default("SolarFlow")
+  updatedAt      DateTime @updatedAt
+}
