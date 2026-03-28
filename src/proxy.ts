@@ -1,6 +1,10 @@
 import { auth } from "@/lib/auth";
 import { NextResponse } from "next/server";
 
+/**
+ * Next.js 16+ network boundary (replaces deprecated middleware.ts).
+ * See https://nextjs.org/docs/app/api-reference/file-conventions/proxy
+ */
 export default auth((req) => {
   const { pathname } = req.nextUrl;
 
