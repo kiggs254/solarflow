@@ -36,11 +36,11 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { ChevronDown, ChevronUp, Pencil, Plus, Trash2, User, GitBranch, Paintbrush } from "lucide-react";
+import { ChevronDown, ChevronUp, Pencil, Plus, Trash2, User, Users, GitBranch, Paintbrush } from "lucide-react";
 import type { LeadPipelineStage, ProjectStatusOption, ProposalStatusOption } from "@prisma/client";
 
-type PageTab = "general" | "workflows" | "branding";
-type WorkflowSub = "lead-stages" | "project-statuses" | "proposal-statuses" | "lead-forms" | "users";
+type PageTab = "general" | "workflows" | "users" | "branding";
+type WorkflowSub = "lead-stages" | "project-statuses" | "proposal-statuses" | "lead-forms";
 
 export default function SettingsPage() {
   const { data: session } = useSession();
@@ -57,6 +57,7 @@ export default function SettingsPage() {
   const tabs: { id: PageTab; label: string; icon: React.ElementType; adminOnly?: boolean }[] = [
     { id: "general", label: "General", icon: User },
     { id: "workflows", label: "Workflows", icon: GitBranch, adminOnly: true },
+    { id: "users", label: "Users", icon: Users, adminOnly: true },
     { id: "branding", label: "Branding", icon: Paintbrush, adminOnly: true },
   ];
 
@@ -143,7 +144,6 @@ export default function SettingsPage() {
                 ["project-statuses", "Project statuses"],
                 ["proposal-statuses", "Proposal statuses"],
                 ["lead-forms", "Lead forms"],
-                ["users", "Users"],
               ] as const
             ).map(([id, label]) => (
               <button
@@ -173,14 +173,16 @@ export default function SettingsPage() {
           {workflowSub === "lead-forms" && (
             <LeadFormsAdmin stages={leadStages} users={users ?? []} />
           )}
-          {workflowSub === "users" && (
-            <UsersAdmin
-              users={users}
-              currentUserId={session?.user?.id}
-              onRefresh={mutUsers}
-            />
-          )}
         </div>
+      )}
+
+      {/* Users tab (admin) */}
+      {pageTab === "users" && isAdmin && (
+        <UsersAdmin
+          users={users ?? []}
+          currentUserId={session?.user?.id}
+          onRefresh={mutUsers}
+        />
       )}
 
       {/* Branding tab (admin) */}

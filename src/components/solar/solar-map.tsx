@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useRef } from "react";
+import { useState, useCallback, useRef, useEffect } from "react";
 import {
   GoogleMap,
   useJsApiLoader,
@@ -28,7 +28,8 @@ export type RegionBounds = {
 };
 
 interface SolarMapProps {
-  onLocationSelect: (lat: number, lng: number) => void;
+  /** Called when the user picks a search result — clear analysis location / region on the parent so the map can move without snapping back to the old marker. */
+  onSearchNavigate?: () => void;
   onAddressResolved?: (formattedAddress: string) => void;
   roofSegments?: {
     center: { latitude: number; longitude: number };
@@ -51,7 +52,7 @@ interface SolarMapProps {
 const libraries: ("places" | "drawing")[] = ["places", "drawing"];
 
 export function SolarMap({
-  onLocationSelect,
+  onSearchNavigate,
   onAddressResolved,
   roofSegments,
   selectedLocation,
@@ -69,13 +70,26 @@ export function SolarMap({
 
   const [searchValue, setSearchValue] = useState("");
   const [drawMode, setDrawMode] = useState(false);
+  /** Map view when there is no analysis point yet (search / pan / zoom only). */
+  const [viewCenter, setViewCenter] = useState<{ lat: number; lng: number } | null>(null);
+  const [viewZoom, setViewZoom] = useState(12);
   const mapRef = useRef<google.maps.Map | null>(null);
   const autocompleteRef = useRef<google.maps.places.Autocomplete | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
-  const rectangleRef = useRef<google.maps.Rectangle | null>(null);
   const geocodeDoneRef = useRef(false);
   const geocodeTargetRef = useRef(initialGeocodeAddress);
   geocodeTargetRef.current = initialGeocodeAddress;
+
+  const mapCenter = selectedLocation ?? viewCenter ?? DEFAULT_CENTER;
+  const mapZoom = selectedLocation ? 20 : viewZoom;
+
+  /** Keep local view in sync when parent supplies an analysis point (URL or after drawing). */
+  useEffect(() => {
+    if (selectedLocation) {
+      setViewCenter(selectedLocation);
+      setViewZoom(20);
+    }
+  }, [selectedLocation?.lat, selectedLocation?.lng]);
 
   const onMapLoad = useCallback(
     (map: google.maps.Map) => {
@@ -93,9 +107,10 @@ export function SolarMap({
           const loc = results[0].geometry!.location!;
           const lat = loc.lat();
           const lng = loc.lng();
+          setViewCenter({ lat, lng });
+          setViewZoom(20);
           map.panTo({ lat, lng });
           map.setZoom(20);
-          onLocationSelect(lat, lng);
           const formatted = results[0].formatted_address || addr;
           setSearchValue(formatted);
           onAddressResolved?.(formatted);
@@ -111,32 +126,19 @@ export function SolarMap({
           if (place?.geometry?.location) {
             const lat = place.geometry.location.lat();
             const lng = place.geometry.location.lng();
+            onSearchNavigate?.();
+            setViewCenter({ lat, lng });
+            setViewZoom(20);
             map.panTo({ lat, lng });
             map.setZoom(20);
-            onLocationSelect(lat, lng);
-            const addr = place.formatted_address || "";
-            setSearchValue(addr);
-            onAddressResolved?.(addr);
+            const resolved = place.formatted_address || "";
+            setSearchValue(resolved);
+            onAddressResolved?.(resolved);
           }
         });
       }
     },
-    [onLocationSelect, onAddressResolved, selectedLocation]
-  );
-
-  const handleMapClick = useCallback(
-    (e: google.maps.MapMouseEvent) => {
-      if (e.latLng) {
-        const lat = e.latLng.lat();
-        const lng = e.latLng.lng();
-        onLocationSelect(lat, lng);
-        mapRef.current?.panTo({ lat, lng });
-        if (mapRef.current && mapRef.current.getZoom()! < 18) {
-          mapRef.current.setZoom(20);
-        }
-      }
-    },
-    [onLocationSelect]
+    [onAddressResolved, onSearchNavigate, selectedLocation]
   );
 
   const handleIdle = useCallback(() => {
@@ -144,8 +146,15 @@ export function SolarMap({
     if (!map || !onMapIdle) return;
     const c = map.getCenter();
     const z = map.getZoom() ?? 18;
-    if (c) onMapIdle({ center: { lat: c.lat(), lng: c.lng() }, zoom: z });
-  }, [onMapIdle]);
+    if (c) {
+      const center = { lat: c.lat(), lng: c.lng() };
+      onMapIdle({ center, zoom: z });
+      if (!selectedLocation) {
+        setViewCenter(center);
+        setViewZoom(z);
+      }
+    }
+  }, [onMapIdle, selectedLocation]);
 
   const onRectangleComplete = useCallback(
     (rect: google.maps.Rectangle) => {
@@ -165,21 +174,6 @@ export function SolarMap({
     },
     [onRegionChange]
   );
-
-  const pushBoundsFromRectangle = useCallback(() => {
-    const r = rectangleRef.current;
-    if (!r || !onRegionChange) return;
-    const b = r.getBounds();
-    if (!b) return;
-    const ne = b.getNorthEast();
-    const sw = b.getSouthWest();
-    onRegionChange({
-      north: ne.lat(),
-      east: ne.lng(),
-      south: sw.lat(),
-      west: sw.lng(),
-    });
-  }, [onRegionChange]);
 
   if (!isLoaded) {
     return (
@@ -251,9 +245,8 @@ export function SolarMap({
       <div className="overflow-hidden rounded-xl border border-border">
         <GoogleMap
           mapContainerStyle={{ width: "100%", height: "500px" }}
-          center={selectedLocation || DEFAULT_CENTER}
-          zoom={selectedLocation ? 20 : 12}
-          onClick={drawMode ? undefined : handleMapClick}
+          center={mapCenter}
+          zoom={mapZoom}
           onLoad={onMapLoad}
           onIdle={handleIdle}
           options={{
@@ -270,6 +263,7 @@ export function SolarMap({
 
           {drawMode && onRegionChange && typeof google !== "undefined" && google.maps?.drawing && (
             <DrawingManager
+              key="drawing-active"
               options={{
                 drawingControl: false,
                 rectangleOptions: {
@@ -289,23 +283,17 @@ export function SolarMap({
 
           {rectBounds && !drawMode && (
             <Rectangle
+              key={`${rectBounds.north}-${rectBounds.south}-${rectBounds.east}-${rectBounds.west}`}
               bounds={rectBounds}
               options={{
                 fillColor: "#f59e0b",
                 fillOpacity: 0.2,
                 strokeColor: "#f59e0b",
                 strokeWeight: 2,
-                editable: true,
-                draggable: true,
-                clickable: true,
+                editable: false,
+                draggable: false,
+                clickable: false,
               }}
-              onLoad={(r) => {
-                rectangleRef.current = r;
-              }}
-              onUnmount={() => {
-                rectangleRef.current = null;
-              }}
-              onBoundsChanged={pushBoundsFromRectangle}
             />
           )}
 
@@ -325,10 +313,11 @@ export function SolarMap({
         </GoogleMap>
       </div>
 
-      {!selectedLocation && (
+      {!regionBounds && (
         <p className="text-center text-sm text-muted-foreground">
           <MapPin className="inline h-4 w-4 mr-1" />
-          Search for an address or click on the map to analyze solar potential
+          Search to move the map, then use <span className="font-medium text-foreground">Draw region</span> to
+          select the area. Solar analysis uses the center of your rectangle.
         </p>
       )}
     </div>

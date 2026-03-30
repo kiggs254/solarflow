@@ -9,9 +9,10 @@ import { BuildingInsightsPanel } from "@/components/solar/building-insights-pane
 import { SystemDesigner, type DesignCompletePayload } from "@/components/solar/system-designer";
 import { SolarHeatmap } from "@/components/solar/solar-heatmap";
 import { CreateProposalDialog } from "@/components/solar/create-proposal-dialog";
+import { filterBuildingInsightsToRegion } from "@/lib/solar-region-filter";
 import { Loading, PageLoading } from "@/components/ui/loading";
 import { Card, CardContent } from "@/components/ui/card";
-import { Sun } from "lucide-react";
+import { AlertTriangle, Sun } from "lucide-react";
 
 function parseSolarSearchParams(searchParams: ReturnType<typeof useSearchParams>) {
   const lat = searchParams.get("lat");
@@ -56,13 +57,39 @@ function SolarPageInner() {
     setPreselectedLeadId(urlBoot.leadId);
   }, [urlBoot.location?.lat, urlBoot.location?.lng, urlBoot.addressParam, urlBoot.leadId]);
 
-  const { insights, isLoading } = useBuildingInsights(location?.lat ?? null, location?.lng ?? null);
+  /** Building Insights API uses a point; use the center of the drawn rectangle when present. */
+  useEffect(() => {
+    if (!regionBounds) return;
+    const lat = (regionBounds.north + regionBounds.south) / 2;
+    const lng = (regionBounds.east + regionBounds.west) / 2;
+    setLocation((prev) => {
+      if (prev && Math.abs(prev.lat - lat) < 1e-7 && Math.abs(prev.lng - lng) < 1e-7) return prev;
+      return { lat, lng };
+    });
+  }, [regionBounds]);
+
+  const { insights, isLoading, isError, errorMessage } = useBuildingInsights(
+    location?.lat ?? null,
+    location?.lng ?? null
+  );
+
+  const solarFetchFailed = Boolean(location && !isLoading && isError && errorMessage);
+
+  const displayInsights = useMemo(() => {
+    if (!insights) return null;
+    return filterBuildingInsightsToRegion(insights, regionBounds);
+  }, [insights, regionBounds]);
+
+  const noSegmentsInRegion =
+    Boolean(regionBounds && insights && displayInsights?.solarPotential.roofSegmentStats.length === 0);
 
   const [proposalOpen, setProposalOpen] = useState(false);
   const [designPayload, setDesignPayload] = useState<DesignCompletePayload | null>(null);
 
-  const handleLocationSelect = useCallback((lat: number, lng: number) => {
-    setLocation({ lat, lng });
+  /** Search only moves the map; clear any analysis point / rectangle so the view isn’t pinned to an old marker. */
+  const handleSearchNavigate = useCallback(() => {
+    setLocation(null);
+    setRegionBounds(null);
   }, []);
 
   const handleMapIdle = useCallback((state: { center: { lat: number; lng: number }; zoom: number }) => {
@@ -105,7 +132,9 @@ function SolarPageInner() {
       <div>
         <h1 className="text-2xl font-bold text-foreground">Solar Analysis</h1>
         <p className="text-sm text-muted-foreground">
-          Analyze solar potential, draw a region, capture a map snapshot, and create proposals
+          Draw a rectangle to focus the analysis: the Solar API uses the rectangle center, and segments plus
+          metrics are scoped to roof areas that intersect your shape. Search only zooms the map—analysis starts
+          after you draw a region. Capture a snapshot and create proposals when ready.
         </p>
         {preselectedLeadId && (
           <p className="mt-2 text-xs text-brand-700">
@@ -117,10 +146,10 @@ function SolarPageInner() {
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
         <div className="space-y-6 lg:col-span-2">
           <SolarMap
-            onLocationSelect={handleLocationSelect}
+            onSearchNavigate={handleSearchNavigate}
             onAddressResolved={setAddress}
             selectedLocation={location}
-            roofSegments={insights?.solarPotential?.roofSegmentStats}
+            roofSegments={displayInsights?.solarPotential?.roofSegmentStats}
             regionBounds={regionBounds}
             onRegionChange={setRegionBounds}
             onMapIdle={handleMapIdle}
@@ -165,28 +194,60 @@ function SolarPageInner() {
             </Card>
           )}
 
-          {insights && <SolarHeatmap insights={insights} />}
+          {solarFetchFailed && (
+            <div
+              role="alert"
+              className="rounded-lg border border-destructive/40 bg-destructive/5 px-4 py-3 text-sm text-foreground"
+            >
+              <p className="font-medium text-destructive">Solar data unavailable</p>
+              <p className="mt-2 text-muted-foreground">{errorMessage}</p>
+            </div>
+          )}
+
+          {noSegmentsInRegion && (
+            <div
+              role="status"
+              className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-950"
+            >
+              <p className="font-medium">No roof segments in the drawn area</p>
+              <p className="mt-1 text-amber-900/90">
+                Move or enlarge the rectangle so it overlaps the roof on the map, then release to refresh the
+                analysis for that region.
+              </p>
+            </div>
+          )}
+
+          {displayInsights && <SolarHeatmap insights={displayInsights} />}
         </div>
 
         <div className="space-y-6">
-          {insights ? (
+          {displayInsights ? (
             <>
-              <BuildingInsightsPanel insights={insights} />
+              <BuildingInsightsPanel insights={displayInsights} />
               <SystemDesigner
-                insights={insights}
+                insights={displayInsights}
                 onDesignComplete={(d) => {
                   setDesignPayload(d);
                   setProposalOpen(true);
                 }}
               />
             </>
+          ) : solarFetchFailed ? (
+            <Card>
+              <CardContent className="py-12 text-center">
+                <AlertTriangle className="mx-auto mb-3 h-12 w-12 text-destructive" />
+                <p className="text-sm font-medium text-foreground">Solar data unavailable</p>
+                <p className="mt-2 text-left text-xs text-muted-foreground">{errorMessage}</p>
+              </CardContent>
+            </Card>
           ) : (
             <Card>
               <CardContent className="py-12 text-center">
                 <Sun className="mx-auto mb-3 h-12 w-12 text-muted-foreground" />
-                <p className="text-sm font-medium text-foreground">Select a Location</p>
+                <p className="text-sm font-medium text-foreground">Draw a region</p>
                 <p className="mt-1 text-xs text-muted-foreground">
-                  Search for an address or click on the map to view solar analysis data
+                  Use <strong className="text-foreground">Draw region</strong> on the map, then finish the rectangle.
+                  Analysis loads for the center of that area. You can search first to move the map.
                 </p>
               </CardContent>
             </Card>
@@ -194,14 +255,14 @@ function SolarPageInner() {
         </div>
       </div>
 
-      {insights && designPayload && location && (
+      {displayInsights && designPayload && location && (
         <CreateProposalDialog
           open={proposalOpen}
           onClose={() => {
             setProposalOpen(false);
             setDesignPayload(null);
           }}
-          insights={insights}
+          insights={displayInsights}
           design={designPayload}
           leadAddress={address}
           latitude={location.lat}

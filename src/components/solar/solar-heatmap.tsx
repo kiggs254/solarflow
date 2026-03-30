@@ -10,7 +10,7 @@ interface SolarHeatmapProps {
 export function SolarHeatmap({ insights }: SolarHeatmapProps) {
   const sp = insights.solarPotential;
   const quantiles = sp.wholeRoofStats.sunshineQuantiles;
-  const maxSunshine = Math.max(...quantiles);
+  const maxSunshine = quantiles.length ? Math.max(...quantiles) : 0;
 
   return (
     <Card>
@@ -24,6 +24,10 @@ export function SolarHeatmap({ insights }: SolarHeatmapProps) {
             <span>High Exposure</span>
           </div>
           <div className="h-4 rounded-full bg-gradient-to-r from-blue-500 via-yellow-400 to-red-500" />
+
+          {quantiles.length === 0 && (
+            <p className="text-sm text-muted-foreground">No sunshine quantiles for the current selection.</p>
+          )}
 
           <div className="mt-4 space-y-2">
             {quantiles.map((q, i) => {

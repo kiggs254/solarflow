@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
-import { fetchBuildingInsights } from "@/lib/solar-api";
+import { fetchBuildingInsights, SolarApiError } from "@/lib/solar-api";
 
 export async function GET(req: NextRequest) {
   const session = await auth();
@@ -14,6 +14,14 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "lat and lng are required" }, { status: 400 });
   }
 
-  const data = await fetchBuildingInsights(lat, lng);
-  return NextResponse.json(data);
+  try {
+    const data = await fetchBuildingInsights(lat, lng);
+    return NextResponse.json(data);
+  } catch (e) {
+    if (e instanceof SolarApiError) {
+      return NextResponse.json({ error: e.message, code: e.code }, { status: e.httpStatus });
+    }
+    console.error("fetchBuildingInsights:", e);
+    return NextResponse.json({ error: "Solar data request failed", code: "UNKNOWN" }, { status: 500 });
+  }
 }
