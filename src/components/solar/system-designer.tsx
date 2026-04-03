@@ -8,6 +8,7 @@ import { calculateSystemDesign, PANEL_OPTIONS, BATTERY_OPTIONS, INVERTER_OPTIONS
 import { calculateFinancials, DEFAULT_COST_PER_WATT, DEFAULT_ELECTRICITY_RATE, DEFAULT_INCENTIVE_PERCENT } from "@/lib/financial";
 import { formatNumber, formatCurrency } from "@/lib/utils";
 import type { BuildingInsights } from "@/types/solar";
+import type { NormalizedSolarData } from "@/types/solar-providers";
 import { Zap, Calculator } from "lucide-react";
 import { usePanels, useBatteries, useInverters } from "@/hooks/use-equipment";
 import type { SolarPanel, Battery, Inverter } from "@prisma/client";
@@ -35,7 +36,8 @@ export interface DesignCompletePayload {
 }
 
 interface SystemDesignerProps {
-  insights: BuildingInsights;
+  insights?: BuildingInsights;
+  normalized?: NormalizedSolarData;
   onDesignComplete?: (design: DesignCompletePayload) => void;
 }
 
@@ -43,7 +45,7 @@ function inverterEfficiencyBonus(efficiency: number): number {
   return Math.min(0.08, Math.max(0, (efficiency - 0.96) * 1.5));
 }
 
-export function SystemDesigner({ insights, onDesignComplete }: SystemDesignerProps) {
+export function SystemDesigner({ insights, normalized, onDesignComplete }: SystemDesignerProps) {
   const { panels: dbPanels, isLoading: lp } = usePanels(true);
   const { batteries: dbBatteries, isLoading: lb } = useBatteries(true);
   const { inverters: dbInverters, isLoading: li } = useInverters(true);
@@ -63,8 +65,13 @@ export function SystemDesigner({ insights, onDesignComplete }: SystemDesignerPro
 
   const useDb = dbPanels.length > 0 && dbInverters.length > 0;
 
-  const sp = insights.solarPotential;
-  const sunHoursPerDay = sp.maxSunshineHoursPerYear / 365;
+  const sp = insights?.solarPotential;
+  // Prefer Google's precise value; fall back to normalized annual hours from other providers
+  const sunHoursPerDay = sp
+    ? sp.maxSunshineHoursPerYear / 365
+    : (normalized?.annualSunshineHours ?? 1800) / 365;
+  // Roof area: from Google roof analysis or a sensible default (user can't adjust here)
+  const roofAreaSqM = sp?.wholeRoofStats.areaMeters2 ?? normalized?.roofAnalysis?.areaMeters2 ?? 50;
 
   const { panel, battery, inverter, efficiency } = useMemo(() => {
     if (useDb) {
@@ -103,13 +110,13 @@ export function SystemDesigner({ insights, onDesignComplete }: SystemDesignerPro
     const wattage = "wattage" in panel && typeof panel.wattage === "number" ? panel.wattage : (panel as { wattage: number }).wattage;
     const areaSqM = "areaSqM" in panel && typeof (panel as SolarPanel).areaSqM === "number" ? (panel as SolarPanel).areaSqM : (panel as { areaSqM: number }).areaSqM;
     return calculateSystemDesign({
-      roofAreaSqM: sp.wholeRoofStats.areaMeters2,
+      roofAreaSqM,
       panelWattage: wattage,
       panelAreaSqM: areaSqM,
       sunHoursPerDay,
       efficiency,
     });
-  }, [panel, sp.wholeRoofStats.areaMeters2, sunHoursPerDay, efficiency]);
+  }, [panel, roofAreaSqM, sunHoursPerDay, efficiency]);
 
   const financials = useMemo(() => {
     let batteryCost = 0;
@@ -184,6 +191,11 @@ export function SystemDesigner({ insights, onDesignComplete }: SystemDesignerPro
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">
+        {!sp && normalized && (
+          <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-900/40 dark:bg-amber-950/20 dark:text-amber-200">
+            Roof area estimated at 50 m² (no rooftop data from {normalized.dataSource}). Google Solar API provides precise measurements.
+          </div>
+        )}
         <Select
           id="panel"
           label="Solar Panel"

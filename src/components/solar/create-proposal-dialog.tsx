@@ -10,13 +10,15 @@ import { useLeadStages } from "@/hooks/use-workflows";
 import { createProposal } from "@/hooks/use-proposals";
 import { formatCurrency, formatNumber } from "@/lib/utils";
 import type { BuildingInsights } from "@/types/solar";
+import type { NormalizedSolarData } from "@/types/solar-providers";
 import type { DesignCompletePayload } from "./system-designer";
 import type { RegionBounds } from "./solar-map";
 
 interface CreateProposalDialogProps {
   open: boolean;
   onClose: () => void;
-  insights: BuildingInsights;
+  insights: BuildingInsights | null;
+  normalized: NormalizedSolarData | null;
   design: DesignCompletePayload;
   leadAddress: string;
   latitude: number;
@@ -32,6 +34,7 @@ export function CreateProposalDialog({
   open,
   onClose,
   insights,
+  normalized,
   design,
   leadAddress,
   latitude,
@@ -58,7 +61,7 @@ export function CreateProposalDialog({
     setLeadId(preselectedLeadId);
   }, [open, preselectedLeadId]);
 
-  const sp = insights.solarPotential;
+  const sp = insights?.solarPotential ?? null;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -104,14 +107,14 @@ export function CreateProposalDialog({
         annualSavings: design.annualSavings,
         paybackYears: design.paybackYears,
         roiPercent: design.roi25Year,
-        roofAreaSqM: sp.wholeRoofStats.areaMeters2,
-        maxSunshineHours: sp.maxSunshineHoursPerYear,
+        roofAreaSqM: sp?.wholeRoofStats.areaMeters2 ?? normalized?.roofAnalysis?.areaMeters2 ?? undefined,
+        maxSunshineHours: sp?.maxSunshineHoursPerYear ?? normalized?.annualSunshineHours ?? undefined,
         solarPotentialKwh: design.yearlyProductionKwh,
-        carbonOffsetKg: sp.carbonOffsetFactorKgPerMwh,
-        imageryQuality: insights.imageryQuality,
-        roofSegments: sp.roofSegmentStats as unknown as object,
-        panelConfigs: sp.solarPanelConfigs as unknown as object,
-        sunshineQuantiles: sp.wholeRoofStats.sunshineQuantiles as unknown as object,
+        carbonOffsetKg: sp?.carbonOffsetFactorKgPerMwh ?? undefined,
+        imageryQuality: insights?.imageryQuality ?? undefined,
+        roofSegments: sp?.roofSegmentStats as unknown as object | undefined,
+        panelConfigs: sp?.solarPanelConfigs as unknown as object | undefined,
+        sunshineQuantiles: sp?.wholeRoofStats.sunshineQuantiles as unknown as object | undefined,
         solarPanelId: design.solarPanelId,
         batteryId: design.batteryId,
         inverterId: design.inverterId,
@@ -187,9 +190,19 @@ export function CreateProposalDialog({
 
         <div className="rounded-lg border border-border bg-muted p-3 text-xs space-y-1">
           <p className="font-semibold text-foreground">Analysis summary</p>
-          <p>Roof area: {formatNumber(sp.wholeRoofStats.areaMeters2)} m² | Sunshine: {formatNumber(sp.maxSunshineHoursPerYear, 0)} h/yr</p>
-          <p>Imagery: {insights.imageryQuality} | Carbon factor: {formatNumber(sp.carbonOffsetFactorKgPerMwh, 0)} kg CO₂/MWh</p>
-          <p>Building: {insights.name} | {insights.postalCode} {insights.administrativeArea}</p>
+          <p>
+            {sp ? `Roof area: ${formatNumber(sp.wholeRoofStats.areaMeters2)} m² | ` : ""}
+            Sunshine: {formatNumber((sp?.maxSunshineHoursPerYear ?? normalized?.annualSunshineHours ?? 0), 0)} h/yr
+          </p>
+          {sp && insights && (
+            <p>Imagery: {insights.imageryQuality} | Carbon factor: {formatNumber(sp.carbonOffsetFactorKgPerMwh, 0)} kg CO₂/MWh</p>
+          )}
+          {insights && (
+            <p>Building: {insights.name} | {insights.postalCode} {insights.administrativeArea}</p>
+          )}
+          {!insights && normalized && (
+            <p>Data source: {normalized.dataSource} · Coverage: {normalized.coverageQuality}</p>
+          )}
         </div>
 
         <div className="rounded-lg border border-brand-100 bg-brand-50/50 p-3 text-xs text-brand-950 space-y-1 dark:border-brand-900/40 dark:bg-brand-950/25 dark:text-brand-100">

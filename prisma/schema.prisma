@@ -294,3 +294,11 @@ model WhiteLabelSettings {
   companyName    String  @default("SolarFlow")
   updatedAt      DateTime @updatedAt
 }
+
+model SolarProviderConfig {
+  id               String   @id @default("singleton")
+  activeProvider   String   @default("GOOGLE")
+  fallbackProvider String?
+  nrelApiKey       String?
+  updatedAt        DateTime @updatedAt
+}

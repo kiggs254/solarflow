@@ -45,6 +45,11 @@ function SolarPageInner() {
   const [location, setLocation] = useState<{ lat: number; lng: number } | null>(() => urlBoot.location);
   const [address, setAddress] = useState(() => urlBoot.addressParam);
   const [regionBounds, setRegionBounds] = useState<RegionBounds | null>(null);
+
+  const handleLocationPin = useCallback((lat: number, lng: number) => {
+    setLocation({ lat, lng });
+    setRegionBounds(null);
+  }, []);
   const [mapSnapshot, setMapSnapshot] = useState<string | null>(null);
   const [snapshotError, setSnapshotError] = useState<string | null>(null);
   const [capturing, setCapturing] = useState(false);
@@ -68,7 +73,7 @@ function SolarPageInner() {
     });
   }, [regionBounds]);
 
-  const { insights, isLoading, isError, errorMessage } = useBuildingInsights(
+  const { insights, normalized, provider, isLoading, isError, errorMessage } = useBuildingInsights(
     location?.lat ?? null,
     location?.lng ?? null
   );
@@ -83,14 +88,18 @@ function SolarPageInner() {
   const noSegmentsInRegion =
     Boolean(regionBounds && insights && displayInsights?.solarPotential.roofSegmentStats.length === 0);
 
+  // For non-Google providers there are no roof segments to filter — use normalized data directly
+  const hasNonGoogleData = !insights && normalized;
+
   const [proposalOpen, setProposalOpen] = useState(false);
   const [designPayload, setDesignPayload] = useState<DesignCompletePayload | null>(null);
 
-  /** Search only moves the map; clear any analysis point / rectangle so the view isn’t pinned to an old marker. */
+  /** Search or clear: remove analysis point + rectangle so view isn’t pinned. */
   const handleSearchNavigate = useCallback(() => {
     setLocation(null);
     setRegionBounds(null);
   }, []);
+
 
   const handleMapIdle = useCallback((state: { center: { lat: number; lng: number }; zoom: number }) => {
     mapStateRef.current = state;
@@ -132,9 +141,7 @@ function SolarPageInner() {
       <div>
         <h1 className="text-2xl font-bold text-foreground">Solar Analysis</h1>
         <p className="text-sm text-muted-foreground">
-          Draw a rectangle to focus the analysis: the Solar API uses the rectangle center, and segments plus
-          metrics are scoped to roof areas that intersect your shape. Search only zooms the map—analysis starts
-          after you draw a region. Capture a snapshot and create proposals when ready.
+          Search for an address, then click a point on the map or draw a region to run the analysis.
         </p>
         {preselectedLeadId && (
           <p className="mt-2 text-xs text-brand-700">
@@ -152,6 +159,7 @@ function SolarPageInner() {
             roofSegments={displayInsights?.solarPotential?.roofSegmentStats}
             regionBounds={regionBounds}
             onRegionChange={setRegionBounds}
+            onLocationPin={handleLocationPin}
             onMapIdle={handleMapIdle}
             onCaptureRequest={handleCapture}
             capturing={capturing}
@@ -221,11 +229,16 @@ function SolarPageInner() {
         </div>
 
         <div className="space-y-6">
-          {displayInsights ? (
+          {(displayInsights || hasNonGoogleData) ? (
             <>
-              <BuildingInsightsPanel insights={displayInsights} />
+              <BuildingInsightsPanel
+                insights={displayInsights ?? undefined}
+                normalized={normalized}
+                provider={provider}
+              />
               <SystemDesigner
-                insights={displayInsights}
+                insights={displayInsights ?? undefined}
+                normalized={normalized}
                 onDesignComplete={(d) => {
                   setDesignPayload(d);
                   setProposalOpen(true);
@@ -240,14 +253,22 @@ function SolarPageInner() {
                 <p className="mt-2 text-left text-xs text-muted-foreground">{errorMessage}</p>
               </CardContent>
             </Card>
+          ) : location && isLoading ? (
+            <Card>
+              <CardContent className="py-12 text-center">
+                <Loading size="lg" className="mx-auto mb-3" />
+                <p className="text-sm font-medium text-foreground">Analyzing…</p>
+                <p className="mt-1 text-xs text-muted-foreground">Fetching solar data for this location</p>
+              </CardContent>
+            </Card>
           ) : (
             <Card>
               <CardContent className="py-12 text-center">
                 <Sun className="mx-auto mb-3 h-12 w-12 text-muted-foreground" />
-                <p className="text-sm font-medium text-foreground">Draw a region</p>
+                <p className="text-sm font-medium text-foreground">Select a location</p>
                 <p className="mt-1 text-xs text-muted-foreground">
-                  Use <strong className="text-foreground">Draw region</strong> on the map, then finish the rectangle.
-                  Analysis loads for the center of that area. You can search first to move the map.
+                  Click anywhere on the map to analyze that point, or use{" "}
+                  <strong className="text-foreground">Draw area</strong> to select a specific roof region.
                 </p>
               </CardContent>
             </Card>
@@ -255,14 +276,15 @@ function SolarPageInner() {
         </div>
       </div>
 
-      {displayInsights && designPayload && location && (
+      {(displayInsights || hasNonGoogleData) && designPayload && location && (
         <CreateProposalDialog
           open={proposalOpen}
           onClose={() => {
             setProposalOpen(false);
             setDesignPayload(null);
           }}
-          insights={displayInsights}
+          insights={displayInsights ?? null}
+          normalized={normalized ?? null}
           design={designPayload}
           leadAddress={address}
           latitude={location.lat}

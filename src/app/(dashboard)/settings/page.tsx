@@ -36,10 +36,11 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { ChevronDown, ChevronUp, Pencil, Plus, Trash2, User, Users, GitBranch, Paintbrush } from "lucide-react";
+import { ChevronDown, ChevronUp, Pencil, Plus, Trash2, User, Users, GitBranch, Paintbrush, Sun } from "lucide-react";
 import type { LeadPipelineStage, ProjectStatusOption, ProposalStatusOption } from "@prisma/client";
+import { SolarApiAdmin } from "@/components/settings/solar-api-admin";
 
-type PageTab = "general" | "workflows" | "users" | "branding";
+type PageTab = "general" | "workflows" | "users" | "branding" | "solar-apis";
 type WorkflowSub = "lead-stages" | "project-statuses" | "proposal-statuses" | "lead-forms";
 
 export default function SettingsPage() {
@@ -59,6 +60,7 @@ export default function SettingsPage() {
     { id: "workflows", label: "Workflows", icon: GitBranch, adminOnly: true },
     { id: "users", label: "Users", icon: Users, adminOnly: true },
     { id: "branding", label: "Branding", icon: Paintbrush, adminOnly: true },
+    { id: "solar-apis", label: "Solar APIs", icon: Sun, adminOnly: true },
   ];
 
   const visibleTabs = tabs.filter((t) => !t.adminOnly || isAdmin);
@@ -187,6 +189,9 @@ export default function SettingsPage() {
 
       {/* Branding tab (admin) */}
       {pageTab === "branding" && isAdmin && <WhiteLabelAdmin />}
+
+      {/* Solar APIs tab (admin) */}
+      {pageTab === "solar-apis" && isAdmin && <SolarApiAdmin />}
     </div>
   );
 }

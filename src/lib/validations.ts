@@ -251,3 +251,14 @@ export type TaskInput = z.infer<typeof taskSchema>;
 export type SolarPanelEquipmentInput = z.infer<typeof solarPanelEquipmentSchema>;
 export type BatteryEquipmentInput = z.infer<typeof batteryEquipmentSchema>;
 export type InverterEquipmentInput = z.infer<typeof inverterEquipmentSchema>;
+
+export const solarProviderNames = ["GOOGLE", "PVGIS", "NREL", "NASA", "OPEN_METEO"] as const;
+export const freeSolarProviderNames = ["PVGIS", "NASA", "OPEN_METEO"] as const;
+
+export const solarConfigSchema = z.object({
+  activeProvider: z.enum(solarProviderNames),
+  fallbackProvider: z.enum(freeSolarProviderNames).nullable().optional(),
+  nrelApiKey: z.string().min(1).max(200).optional(),
+});
+
+export type SolarConfigInput = z.infer<typeof solarConfigSchema>;
