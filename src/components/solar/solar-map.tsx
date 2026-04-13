@@ -7,10 +7,21 @@ import {
   Marker,
   Polygon,
   DrawingManager,
-  Rectangle,
 } from "@react-google-maps/api";
 import { Loading } from "@/components/ui/loading";
-import { Search, PenLine, X, Camera, MousePointerClick, Move } from "lucide-react";
+import {
+  Search,
+  PenLine,
+  X,
+  Camera,
+  MousePointerClick,
+  Move,
+  Grid3x3,
+  Zap,
+  Sun,
+} from "lucide-react";
+import { polygonBBox, samplePanelGrid, isSelfIntersecting, type PanelGridRect } from "@/lib/geometry";
+import { formatNumber } from "@/lib/utils";
 
 const MAP_STYLES = [
   { featureType: "poi", stylers: [{ visibility: "off" }] },
@@ -26,6 +37,23 @@ export type RegionBounds = {
   west: number;
 };
 
+export type RegionPolygon = {
+  /** Closed ring (no duplicate last vertex). */
+  vertices: { lat: number; lng: number }[];
+  /** Geodesic area in m² (Google spherical when available, shoelace fallback otherwise). */
+  areaM2: number;
+  bbox: RegionBounds;
+};
+
+export type EnergyPreview = {
+  areaM2: number;
+  usableAreaM2: number;
+  panels: number;
+  kW: number;
+  kWhYr: number;
+  usableFraction: number;
+};
+
 interface SolarMapProps {
   onSearchNavigate?: () => void;
   onAddressResolved?: (formattedAddress: string) => void;
@@ -38,17 +66,25 @@ interface SolarMapProps {
   }[];
   panels?: { center: { latitude: number; longitude: number }; orientation: string }[];
   selectedLocation?: { lat: number; lng: number } | null;
-  regionBounds?: RegionBounds | null;
-  onRegionChange?: (bounds: RegionBounds | null) => void;
-  /** Called when the user single-clicks the map to pin a point (no rectangle) */
+  regionPolygon?: RegionPolygon | null;
+  onRegionChange?: (region: RegionPolygon | null) => void;
+  /** Called when the user single-clicks the map to pin a point (no polygon) */
   onLocationPin?: (lat: number, lng: number) => void;
   onMapIdle?: (state: { center: { lat: number; lng: number }; zoom: number }) => void;
   onCaptureRequest?: () => void;
   capturing?: boolean;
   initialGeocodeAddress?: string | null;
+  energyPreview?: EnergyPreview;
+  showPanelGrid?: boolean;
+  onPanelGridToggle?: (v: boolean) => void;
+  usableFraction?: number;
+  onUsableFractionChange?: (n: number) => void;
+  /** Panel footprint for the virtual grid (meters). Defaults to a 1.05 × 1.85 panel. */
+  panelWidthM?: number;
+  panelHeightM?: number;
 }
 
-const libraries: ("places" | "drawing")[] = ["places", "drawing"];
+const libraries: ("places" | "drawing" | "geometry")[] = ["places", "drawing", "geometry"];
 
 // Floating toolbar button style helpers
 const toolbarBtn = (active?: boolean) =>
@@ -63,13 +99,20 @@ export function SolarMap({
   onAddressResolved,
   roofSegments,
   selectedLocation,
-  regionBounds,
+  regionPolygon,
   onRegionChange,
   onLocationPin,
   onMapIdle,
   onCaptureRequest,
   capturing,
   initialGeocodeAddress,
+  energyPreview,
+  showPanelGrid,
+  onPanelGridToggle,
+  usableFraction = 0.75,
+  onUsableFractionChange,
+  panelWidthM = 1.05,
+  panelHeightM = 1.85,
 }: SolarMapProps) {
   const { isLoaded } = useJsApiLoader({
     googleMapsApiKey: process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY || "",
@@ -80,10 +123,12 @@ export function SolarMap({
   const [drawMode, setDrawMode] = useState(false);
   const [viewCenter, setViewCenter] = useState<{ lat: number; lng: number } | null>(null);
   const [viewZoom, setViewZoom] = useState(12);
+  const [selfIntersectError, setSelfIntersectError] = useState(false);
   const mapRef = useRef<google.maps.Map | null>(null);
   const autocompleteRef = useRef<google.maps.places.Autocomplete | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
-  const rectRef = useRef<google.maps.Rectangle | null>(null);
+  const polygonRef = useRef<google.maps.Polygon | null>(null);
+  const pathListenersRef = useRef<google.maps.MapsEventListener[]>([]);
   const geocodeDoneRef = useRef(false);
   const geocodeTargetRef = useRef(initialGeocodeAddress);
   geocodeTargetRef.current = initialGeocodeAddress;
@@ -91,7 +136,7 @@ export function SolarMap({
   const mapCenter = selectedLocation ?? viewCenter ?? DEFAULT_CENTER;
   const mapZoom = selectedLocation ? 20 : viewZoom;
 
-  const hasSelection = Boolean(selectedLocation || regionBounds);
+  const hasSelection = Boolean(selectedLocation || regionPolygon);
 
   // Escape key cancels draw mode
   useEffect(() => {
@@ -108,6 +153,13 @@ export function SolarMap({
       setViewZoom(20);
     }
   }, [selectedLocation?.lat, selectedLocation?.lng]);
+
+  // Auto-dismiss the self-intersect toast after a few seconds.
+  useEffect(() => {
+    if (!selfIntersectError) return;
+    const t = setTimeout(() => setSelfIntersectError(false), 4000);
+    return () => clearTimeout(t);
+  }, [selfIntersectError]);
 
   const onMapLoad = useCallback(
     (map: google.maps.Map) => {
@@ -184,46 +236,87 @@ export function SolarMap({
     [drawMode, onLocationPin]
   );
 
-  const onRectangleComplete = useCallback(
-    (rect: google.maps.Rectangle) => {
-      const b = rect.getBounds();
-      rect.setMap(null);
-      if (b && onRegionChange) {
-        const ne = b.getNorthEast();
-        const sw = b.getSouthWest();
-        const bounds: RegionBounds = {
-          north: ne.lat(),
-          east: ne.lng(),
-          south: sw.lat(),
-          west: sw.lng(),
-        };
-        onRegionChange(bounds);
-        // Fit map to drawn region
-        mapRef.current?.fitBounds(b, 60);
+  /** Extract vertices from a google Polygon path, compute area + bbox, emit. */
+  const buildRegionFromPath = useCallback(
+    (path: google.maps.MVCArray<google.maps.LatLng>): RegionPolygon | null => {
+      const len = path.getLength();
+      if (len < 3) return null;
+      const vertices: { lat: number; lng: number }[] = [];
+      for (let i = 0; i < len; i++) {
+        const p = path.getAt(i);
+        vertices.push({ lat: p.lat(), lng: p.lng() });
       }
-      setDrawMode(false);
+      if (isSelfIntersecting(vertices)) {
+        setSelfIntersectError(true);
+        return null;
+      }
+      let areaM2 = 0;
+      if (
+        typeof google !== "undefined" &&
+        google.maps?.geometry?.spherical?.computeArea
+      ) {
+        areaM2 = google.maps.geometry.spherical.computeArea(path);
+      }
+      const bbox = polygonBBox(vertices);
+      return { vertices, areaM2, bbox };
     },
-    [onRegionChange]
+    []
   );
 
-  const handleRectBoundsChanged = useCallback(() => {
-    if (!rectRef.current || !onRegionChange) return;
-    const b = rectRef.current.getBounds();
-    if (!b) return;
-    const ne = b.getNorthEast();
-    const sw = b.getSouthWest();
-    onRegionChange({
-      north: ne.lat(),
-      east: ne.lng(),
-      south: sw.lat(),
-      west: sw.lng(),
-    });
-  }, [onRegionChange]);
+  const detachPathListeners = useCallback(() => {
+    for (const l of pathListenersRef.current) l.remove();
+    pathListenersRef.current = [];
+  }, []);
+
+  const onPolygonComplete = useCallback(
+    (poly: google.maps.Polygon) => {
+      const path = poly.getPath();
+      const region = buildRegionFromPath(path);
+      poly.setMap(null);
+      setDrawMode(false);
+      if (region && onRegionChange) {
+        onRegionChange(region);
+        if (mapRef.current) {
+          const b = new google.maps.LatLngBounds(
+            { lat: region.bbox.south, lng: region.bbox.west },
+            { lat: region.bbox.north, lng: region.bbox.east }
+          );
+          mapRef.current.fitBounds(b, 60);
+        }
+      }
+    },
+    [buildRegionFromPath, onRegionChange]
+  );
+
+  const handlePersistedPolygonLoad = useCallback(
+    (poly: google.maps.Polygon) => {
+      polygonRef.current = poly;
+      detachPathListeners();
+      const path = poly.getPath();
+      const emit = () => {
+        setSelfIntersectError(false);
+        const region = buildRegionFromPath(path);
+        if (region && onRegionChange) onRegionChange(region);
+      };
+      pathListenersRef.current.push(
+        path.addListener("set_at", emit),
+        path.addListener("insert_at", emit),
+        path.addListener("remove_at", emit)
+      );
+    },
+    [buildRegionFromPath, detachPathListeners, onRegionChange]
+  );
+
+  const handlePersistedPolygonUnmount = useCallback(() => {
+    detachPathListeners();
+    polygonRef.current = null;
+  }, [detachPathListeners]);
 
   const handleClear = useCallback(() => {
     onRegionChange?.(null);
+    onPanelGridToggle?.(false);
     onLocationPin && onSearchNavigate?.();
-  }, [onRegionChange, onLocationPin, onSearchNavigate]);
+  }, [onRegionChange, onPanelGridToggle, onLocationPin, onSearchNavigate]);
 
   // Memoize static map options so @react-google-maps/api never calls setOptions()
   // on every render — that's what causes the map-type control to flicker.
@@ -252,6 +345,25 @@ export function SolarMap({
     });
   }, [drawMode, onLocationPin]);
 
+  // Compute the virtual panel grid using Google's accurate containsLocation.
+  const panelGrid = useMemo<PanelGridRect[]>(() => {
+    if (!isLoaded || !showPanelGrid || !regionPolygon) return [];
+    if (typeof google === "undefined" || !google.maps?.geometry?.poly) return [];
+    const ringPath = regionPolygon.vertices.map(
+      (v) => new google.maps.LatLng(v.lat, v.lng)
+    );
+    const ghost = new google.maps.Polygon({ paths: ringPath });
+    const contains = (lat: number, lng: number) =>
+      google.maps.geometry.poly.containsLocation(new google.maps.LatLng(lat, lng), ghost);
+    return samplePanelGrid({
+      vertices: regionPolygon.vertices,
+      bbox: regionPolygon.bbox,
+      panelWidthM,
+      panelHeightM,
+      containsFn: contains,
+    });
+  }, [isLoaded, showPanelGrid, regionPolygon, panelWidthM, panelHeightM]);
+
   if (!isLoaded) {
     return (
       <div className="flex h-[560px] items-center justify-center rounded-xl border border-border bg-muted">
@@ -273,7 +385,7 @@ export function SolarMap({
     };
   });
 
-  const rectBounds = regionBounds ?? undefined;
+  const usablePercent = Math.round(usableFraction * 100);
 
   return (
     <div className="space-y-2">
@@ -301,10 +413,19 @@ export function SolarMap({
                 <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-amber-400 opacity-75" />
                 <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-amber-400" />
               </span>
-              <span className="text-sm font-medium">Click and drag to draw your area</span>
+              <span className="text-sm font-medium">Click to place vertices · double-click to finish</span>
               <span className="text-xs text-white/50">·</span>
               <span className="rounded bg-white/10 px-1.5 py-0.5 text-xs font-mono text-white/70">Esc</span>
               <span className="text-xs text-white/70">to cancel</span>
+            </div>
+          </div>
+        )}
+
+        {/* ── Self-intersecting polygon toast ── */}
+        {selfIntersectError && (
+          <div className="pointer-events-none absolute inset-x-0 top-3 z-30 flex justify-center">
+            <div className="rounded-lg border border-red-400/40 bg-red-600/95 px-4 py-2 text-xs font-medium text-white shadow-lg">
+              Polygon can&apos;t cross itself — please redraw
             </div>
           </div>
         )}
@@ -343,11 +464,11 @@ export function SolarMap({
             </button>
           )}
 
-          {/* Adjust hint — shown when a rectangle exists */}
-          {rectBounds && !drawMode && (
+          {/* Adjust hint — shown when a polygon exists */}
+          {regionPolygon && !drawMode && (
             <div className="flex items-center gap-1.5 rounded-lg border border-gray-200/80 bg-white/95 px-3 py-2 text-xs text-gray-600 shadow-md backdrop-blur-sm">
               <Move className="h-3.5 w-3.5 text-gray-400 shrink-0" />
-              Drag edges to adjust
+              Drag handles · right-click a vertex to delete
             </div>
           )}
 
@@ -361,6 +482,19 @@ export function SolarMap({
             >
               <X className="h-4 w-4 text-gray-500" />
               Clear
+            </button>
+          )}
+
+          {/* Panels grid toggle */}
+          {regionPolygon && !drawMode && onPanelGridToggle && (
+            <button
+              type="button"
+              onClick={() => onPanelGridToggle(!showPanelGrid)}
+              className={toolbarBtn(showPanelGrid)}
+              title={showPanelGrid ? "Hide virtual panel grid" : "Show virtual panel grid"}
+            >
+              <Grid3x3 className="h-4 w-4" />
+              Panels grid
             </button>
           )}
 
@@ -378,6 +512,72 @@ export function SolarMap({
             </button>
           )}
         </div>
+
+        {/* ── Live energy HUD (bottom-right) ── */}
+        {regionPolygon && energyPreview && !drawMode && (
+          <div className="absolute bottom-3 right-3 z-10 w-64 rounded-2xl border border-white/30 bg-gray-900/85 p-3 text-white shadow-xl backdrop-blur-md">
+            <div className="mb-2 flex items-center justify-between">
+              <div className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-amber-300">
+                <span className="relative flex h-2 w-2">
+                  <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-amber-400 opacity-75" />
+                  <span className="relative inline-flex h-2 w-2 rounded-full bg-amber-400" />
+                </span>
+                Live estimate
+              </div>
+              <Sun className="h-3.5 w-3.5 text-amber-300" />
+            </div>
+            <dl className="space-y-1.5 text-sm">
+              <div className="flex items-baseline justify-between gap-2">
+                <dt className="text-[11px] uppercase tracking-wide text-white/60">Area</dt>
+                <dd className="font-mono font-semibold tabular-nums">
+                  {formatNumber(energyPreview.areaM2, 1)} m²
+                </dd>
+              </div>
+              <div className="flex items-baseline justify-between gap-2">
+                <dt className="text-[11px] uppercase tracking-wide text-white/60">Usable</dt>
+                <dd className="font-mono font-semibold tabular-nums text-amber-200">
+                  {formatNumber(energyPreview.usableAreaM2, 1)} m²
+                </dd>
+              </div>
+              <div className="flex items-baseline justify-between gap-2">
+                <dt className="flex items-center gap-1 text-[11px] uppercase tracking-wide text-white/60">
+                  <Grid3x3 className="h-3 w-3" />
+                  Panels
+                </dt>
+                <dd className="font-mono font-semibold tabular-nums">
+                  {energyPreview.panels} <span className="text-xs text-white/50">· {formatNumber(energyPreview.kW, 2)} kW</span>
+                </dd>
+              </div>
+              <div className="flex items-baseline justify-between gap-2 border-t border-white/10 pt-1.5">
+                <dt className="flex items-center gap-1 text-[11px] uppercase tracking-wide text-amber-300">
+                  <Zap className="h-3 w-3" />
+                  Est yearly
+                </dt>
+                <dd className="font-mono text-base font-bold tabular-nums text-amber-300">
+                  {formatNumber(energyPreview.kWhYr, 0)} kWh
+                </dd>
+              </div>
+            </dl>
+            {onUsableFractionChange && (
+              <div className="mt-3 border-t border-white/10 pt-2.5">
+                <div className="mb-1 flex items-center justify-between text-[10px] uppercase tracking-wide text-white/60">
+                  <span>Usable roof</span>
+                  <span className="font-mono tabular-nums text-amber-200">{usablePercent}%</span>
+                </div>
+                <input
+                  type="range"
+                  min={60}
+                  max={90}
+                  step={1}
+                  value={usablePercent}
+                  onChange={(e) => onUsableFractionChange(parseInt(e.target.value, 10) / 100)}
+                  className="w-full accent-amber-400"
+                  aria-label="Usable roof percentage"
+                />
+              </div>
+            )}
+          </div>
+        )}
 
         {/* ── Google Map ── */}
         <GoogleMap
@@ -414,7 +614,7 @@ export function SolarMap({
               key="drawing-active"
               options={{
                 drawingControl: false,
-                rectangleOptions: {
+                polygonOptions: {
                   fillColor: "#f59e0b",
                   fillOpacity: 0.18,
                   strokeColor: "#f59e0b",
@@ -424,19 +624,18 @@ export function SolarMap({
                   zIndex: 1,
                 },
               }}
-              drawingMode={google.maps.drawing.OverlayType.RECTANGLE}
-              onRectangleComplete={onRectangleComplete}
+              drawingMode={google.maps.drawing.OverlayType.POLYGON}
+              onPolygonComplete={onPolygonComplete}
             />
           )}
 
-          {/* Persisted rectangle — editable and draggable */}
-          {rectBounds && !drawMode && (
-            <Rectangle
-              key={`${rectBounds.north}-${rectBounds.south}-${rectBounds.east}-${rectBounds.west}`}
-              bounds={rectBounds}
-              onLoad={(r) => { rectRef.current = r; }}
-              onUnmount={() => { rectRef.current = null; }}
-              onBoundsChanged={handleRectBoundsChanged}
+          {/* Persisted polygon — editable and draggable */}
+          {regionPolygon && !drawMode && (
+            <Polygon
+              key={`${regionPolygon.vertices.length}-${regionPolygon.bbox.north.toFixed(6)}-${regionPolygon.bbox.west.toFixed(6)}`}
+              paths={regionPolygon.vertices}
+              onLoad={handlePersistedPolygonLoad}
+              onUnmount={handlePersistedPolygonUnmount}
               options={{
                 fillColor: "#f59e0b",
                 fillOpacity: 0.15,
@@ -445,9 +644,28 @@ export function SolarMap({
                 editable: true,
                 draggable: true,
                 clickable: true,
+                zIndex: 2,
               }}
             />
           )}
+
+          {/* Virtual panel grid */}
+          {!drawMode &&
+            panelGrid.map((rect, i) => (
+              <Polygon
+                key={`panel-${i}`}
+                paths={rect.corners}
+                options={{
+                  fillColor: "#fbbf24",
+                  fillOpacity: 0.55,
+                  strokeColor: "#92400e",
+                  strokeOpacity: 0.8,
+                  strokeWeight: 0.5,
+                  clickable: false,
+                  zIndex: 3,
+                }}
+              />
+            ))}
 
           {/* Roof segment polygons */}
           {roofPolygons?.map((poly) => (

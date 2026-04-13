@@ -12,7 +12,7 @@ import { formatCurrency, formatNumber } from "@/lib/utils";
 import type { BuildingInsights } from "@/types/solar";
 import type { NormalizedSolarData } from "@/types/solar-providers";
 import type { DesignCompletePayload } from "./system-designer";
-import type { RegionBounds } from "./solar-map";
+import type { RegionPolygon } from "./solar-map";
 
 interface CreateProposalDialogProps {
   open: boolean;
@@ -24,7 +24,7 @@ interface CreateProposalDialogProps {
   latitude: number;
   longitude: number;
   mapSnapshotBase64: string | null;
-  regionBounds: RegionBounds | null;
+  regionPolygon: RegionPolygon | null;
   /** When set (e.g. from /solar?leadId=), pre-fill “Existing lead” */
   preselectedLeadId?: string | null;
   onCreated: () => void;
@@ -40,7 +40,7 @@ export function CreateProposalDialog({
   latitude,
   longitude,
   mapSnapshotBase64,
-  regionBounds,
+  regionPolygon,
   preselectedLeadId,
   onCreated,
 }: CreateProposalDialogProps) {
@@ -181,10 +181,9 @@ export function CreateProposalDialog({
           </div>
         )}
 
-        {regionBounds && (
+        {regionPolygon && (
           <p className="text-xs text-muted-foreground">
-            Region: N {regionBounds.north.toFixed(5)} S {regionBounds.south.toFixed(5)} E {regionBounds.east.toFixed(5)} W{" "}
-            {regionBounds.west.toFixed(5)}
+            Drawn area: {regionPolygon.areaM2.toFixed(1)} m² · {regionPolygon.vertices.length} vertices
           </p>
         )}
 

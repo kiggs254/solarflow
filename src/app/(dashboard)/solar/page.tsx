@@ -4,12 +4,14 @@ import { Suspense, useState, useCallback, useRef, useMemo, useEffect } from "rea
 import { useRouter, useSearchParams } from "next/navigation";
 import { useBuildingInsights } from "@/hooks/use-solar";
 import { captureMapSnapshot } from "@/hooks/use-equipment";
-import { SolarMap, type RegionBounds } from "@/components/solar/solar-map";
+import { SolarMap, type RegionPolygon, type EnergyPreview } from "@/components/solar/solar-map";
 import { BuildingInsightsPanel } from "@/components/solar/building-insights-panel";
 import { SystemDesigner, type DesignCompletePayload } from "@/components/solar/system-designer";
 import { SolarHeatmap } from "@/components/solar/solar-heatmap";
 import { CreateProposalDialog } from "@/components/solar/create-proposal-dialog";
 import { filterBuildingInsightsToRegion } from "@/lib/solar-region-filter";
+import { polygonCentroid } from "@/lib/geometry";
+import { DEFAULT_EFFICIENCY } from "@/lib/system-design";
 import { Loading, PageLoading } from "@/components/ui/loading";
 import { Card, CardContent } from "@/components/ui/card";
 import { AlertTriangle, Sun } from "lucide-react";
@@ -44,11 +46,14 @@ function SolarPageInner() {
 
   const [location, setLocation] = useState<{ lat: number; lng: number } | null>(() => urlBoot.location);
   const [address, setAddress] = useState(() => urlBoot.addressParam);
-  const [regionBounds, setRegionBounds] = useState<RegionBounds | null>(null);
+  const [region, setRegion] = useState<RegionPolygon | null>(null);
+  const [usableFraction, setUsableFraction] = useState(0.75);
+  const [showPanelGrid, setShowPanelGrid] = useState(false);
 
   const handleLocationPin = useCallback((lat: number, lng: number) => {
     setLocation({ lat, lng });
-    setRegionBounds(null);
+    setRegion(null);
+    setShowPanelGrid(false);
   }, []);
   const [mapSnapshot, setMapSnapshot] = useState<string | null>(null);
   const [snapshotError, setSnapshotError] = useState<string | null>(null);
@@ -62,16 +67,15 @@ function SolarPageInner() {
     setPreselectedLeadId(urlBoot.leadId);
   }, [urlBoot.location?.lat, urlBoot.location?.lng, urlBoot.addressParam, urlBoot.leadId]);
 
-  /** Building Insights API uses a point; use the center of the drawn rectangle when present. */
+  /** Building Insights API uses a point; use the centroid of the drawn polygon when present. */
   useEffect(() => {
-    if (!regionBounds) return;
-    const lat = (regionBounds.north + regionBounds.south) / 2;
-    const lng = (regionBounds.east + regionBounds.west) / 2;
+    if (!region) return;
+    const { lat, lng } = polygonCentroid(region.vertices);
     setLocation((prev) => {
       if (prev && Math.abs(prev.lat - lat) < 1e-7 && Math.abs(prev.lng - lng) < 1e-7) return prev;
       return { lat, lng };
     });
-  }, [regionBounds]);
+  }, [region]);
 
   const { insights, normalized, provider, isLoading, isError, errorMessage } = useBuildingInsights(
     location?.lat ?? null,
@@ -82,11 +86,27 @@ function SolarPageInner() {
 
   const displayInsights = useMemo(() => {
     if (!insights) return null;
-    return filterBuildingInsightsToRegion(insights, regionBounds);
-  }, [insights, regionBounds]);
+    return filterBuildingInsightsToRegion(insights, region?.bbox ?? null);
+  }, [insights, region]);
 
   const noSegmentsInRegion =
-    Boolean(regionBounds && insights && displayInsights?.solarPotential.roofSegmentStats.length === 0);
+    Boolean(region && insights && displayInsights?.solarPotential.roofSegmentStats.length === 0);
+
+  // Energy preview drives both the on-map HUD and the System Designer override.
+  const panelWidthM = insights?.solarPotential.panelWidthMeters ?? 1.05;
+  const panelHeightM = insights?.solarPotential.panelHeightMeters ?? 1.85;
+  const energyPreview = useMemo<EnergyPreview | undefined>(() => {
+    if (!region) return undefined;
+    const sunHoursYr =
+      insights?.solarPotential.maxSunshineHoursPerYear ?? normalized?.annualSunshineHours ?? 1800;
+    const areaM2 = region.areaM2;
+    const usableAreaM2 = areaM2 * usableFraction;
+    const footprint = Math.max(0.1, panelWidthM * panelHeightM);
+    const panels = Math.max(0, Math.floor(usableAreaM2 / footprint));
+    const kW = (panels * 400) / 1000;
+    const kWhYr = kW * sunHoursYr * DEFAULT_EFFICIENCY;
+    return { areaM2, usableAreaM2, panels, kW, kWhYr, usableFraction };
+  }, [region, insights, normalized, usableFraction, panelWidthM, panelHeightM]);
 
   // For non-Google providers there are no roof segments to filter — use normalized data directly
   const hasNonGoogleData = !insights && normalized;
@@ -94,10 +114,11 @@ function SolarPageInner() {
   const [proposalOpen, setProposalOpen] = useState(false);
   const [designPayload, setDesignPayload] = useState<DesignCompletePayload | null>(null);
 
-  /** Search or clear: remove analysis point + rectangle so view isn’t pinned. */
+  /** Search or clear: remove analysis point + polygon so view isn't pinned. */
   const handleSearchNavigate = useCallback(() => {
     setLocation(null);
-    setRegionBounds(null);
+    setRegion(null);
+    setShowPanelGrid(false);
   }, []);
 
 
@@ -119,11 +140,11 @@ function SolarPageInner() {
         width: 640,
         height: 400,
       };
-      if (regionBounds) {
-        payload.neLat = regionBounds.north;
-        payload.neLng = regionBounds.east;
-        payload.swLat = regionBounds.south;
-        payload.swLng = regionBounds.west;
+      if (region) {
+        payload.neLat = region.bbox.north;
+        payload.neLng = region.bbox.east;
+        payload.swLat = region.bbox.south;
+        payload.swLng = region.bbox.west;
       }
       const { dataUrl } = await captureMapSnapshot(payload);
       setMapSnapshot(dataUrl);
@@ -134,7 +155,7 @@ function SolarPageInner() {
     } finally {
       setCapturing(false);
     }
-  }, [location, regionBounds]);
+  }, [location, region]);
 
   return (
     <div className="space-y-6">
@@ -157,13 +178,20 @@ function SolarPageInner() {
             onAddressResolved={setAddress}
             selectedLocation={location}
             roofSegments={displayInsights?.solarPotential?.roofSegmentStats}
-            regionBounds={regionBounds}
-            onRegionChange={setRegionBounds}
+            regionPolygon={region}
+            onRegionChange={setRegion}
             onLocationPin={handleLocationPin}
             onMapIdle={handleMapIdle}
             onCaptureRequest={handleCapture}
             capturing={capturing}
             initialGeocodeAddress={urlBoot.geocodeAddress}
+            energyPreview={energyPreview}
+            showPanelGrid={showPanelGrid}
+            onPanelGridToggle={setShowPanelGrid}
+            usableFraction={usableFraction}
+            onUsableFractionChange={setUsableFraction}
+            panelWidthM={panelWidthM}
+            panelHeightM={panelHeightM}
           />
 
           {snapshotError && (
@@ -239,6 +267,12 @@ function SolarPageInner() {
               <SystemDesigner
                 insights={displayInsights ?? undefined}
                 normalized={normalized}
+                roofAreaOverrideSqM={region ? region.areaM2 * usableFraction : undefined}
+                drawnAreaLabel={
+                  region
+                    ? `${region.areaM2.toFixed(1)} m² drawn · ${Math.round(usableFraction * 100)}% usable`
+                    : undefined
+                }
                 onDesignComplete={(d) => {
                   setDesignPayload(d);
                   setProposalOpen(true);
@@ -290,7 +324,7 @@ function SolarPageInner() {
           latitude={location.lat}
           longitude={location.lng}
           mapSnapshotBase64={mapSnapshot}
-          regionBounds={regionBounds}
+          regionPolygon={region}
           preselectedLeadId={preselectedLeadId}
           onCreated={() => router.push("/proposals")}
         />

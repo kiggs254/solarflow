@@ -9,7 +9,7 @@ import { calculateFinancials, DEFAULT_COST_PER_WATT, DEFAULT_ELECTRICITY_RATE, D
 import { formatNumber, formatCurrency } from "@/lib/utils";
 import type { BuildingInsights } from "@/types/solar";
 import type { NormalizedSolarData } from "@/types/solar-providers";
-import { Zap, Calculator } from "lucide-react";
+import { Zap, Calculator, PenLine } from "lucide-react";
 import { usePanels, useBatteries, useInverters } from "@/hooks/use-equipment";
 import type { SolarPanel, Battery, Inverter } from "@prisma/client";
 import { PageLoading } from "@/components/ui/loading";
@@ -38,6 +38,10 @@ export interface DesignCompletePayload {
 interface SystemDesignerProps {
   insights?: BuildingInsights;
   normalized?: NormalizedSolarData;
+  /** When the user draws a polygon, pass the usable area (m²) here to override roof-analysis area. */
+  roofAreaOverrideSqM?: number;
+  /** Short description shown on the override badge (e.g. "128.4 m² drawn · 75% usable"). */
+  drawnAreaLabel?: string;
   onDesignComplete?: (design: DesignCompletePayload) => void;
 }
 
@@ -45,7 +49,13 @@ function inverterEfficiencyBonus(efficiency: number): number {
   return Math.min(0.08, Math.max(0, (efficiency - 0.96) * 1.5));
 }
 
-export function SystemDesigner({ insights, normalized, onDesignComplete }: SystemDesignerProps) {
+export function SystemDesigner({
+  insights,
+  normalized,
+  roofAreaOverrideSqM,
+  drawnAreaLabel,
+  onDesignComplete,
+}: SystemDesignerProps) {
   const { panels: dbPanels, isLoading: lp } = usePanels(true);
   const { batteries: dbBatteries, isLoading: lb } = useBatteries(true);
   const { inverters: dbInverters, isLoading: li } = useInverters(true);
@@ -70,8 +80,9 @@ export function SystemDesigner({ insights, normalized, onDesignComplete }: Syste
   const sunHoursPerDay = sp
     ? sp.maxSunshineHoursPerYear / 365
     : (normalized?.annualSunshineHours ?? 1800) / 365;
-  // Roof area: from Google roof analysis or a sensible default (user can't adjust here)
-  const roofAreaSqM = sp?.wholeRoofStats.areaMeters2 ?? normalized?.roofAnalysis?.areaMeters2 ?? 50;
+  // Roof area: prefer the user's drawn area (overrides Google's whole-roof total when present).
+  const roofAreaSqM =
+    roofAreaOverrideSqM ?? sp?.wholeRoofStats.areaMeters2 ?? normalized?.roofAnalysis?.areaMeters2 ?? 50;
 
   const { panel, battery, inverter, efficiency } = useMemo(() => {
     if (useDb) {
@@ -225,6 +236,16 @@ export function SystemDesigner({ insights, normalized, onDesignComplete }: Syste
           }
           onChange={(e) => setInverterKey(e.target.value)}
         />
+
+        {roofAreaOverrideSqM != null && (
+          <div className="flex items-start gap-2 rounded-lg border border-amber-300/60 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-900/40 dark:bg-amber-950/20 dark:text-amber-200">
+            <PenLine className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+            <div className="space-y-0.5">
+              <p className="font-semibold">Using drawn area: {formatNumber(roofAreaOverrideSqM, 1)} m²</p>
+              {drawnAreaLabel && <p className="text-amber-800/80 dark:text-amber-300/80">{drawnAreaLabel}</p>}
+            </div>
+          </div>
+        )}
 
         <div className="border-t border-border pt-4 space-y-3">
           <h4 className="text-sm font-semibold text-foreground">System Specs</h4>
