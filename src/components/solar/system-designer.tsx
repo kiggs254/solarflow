@@ -9,7 +9,7 @@ import { calculateFinancials, DEFAULT_COST_PER_WATT, DEFAULT_ELECTRICITY_RATE, D
 import { formatNumber, formatCurrency } from "@/lib/utils";
 import type { BuildingInsights } from "@/types/solar";
 import type { NormalizedSolarData } from "@/types/solar-providers";
-import { Zap, Calculator, PenLine } from "lucide-react";
+import { Zap, Calculator, PenLine, Gauge, Sun, Wallet, Clock, TrendingUp, Battery as BatteryIcon } from "lucide-react";
 import { usePanels, useBatteries, useInverters } from "@/hooks/use-equipment";
 import type { SolarPanel, Battery, Inverter } from "@prisma/client";
 import { PageLoading } from "@/components/ui/loading";
@@ -42,6 +42,8 @@ interface SystemDesignerProps {
   roofAreaOverrideSqM?: number;
   /** Short description shown on the override badge (e.g. "128.4 m² drawn · 75% usable"). */
   drawnAreaLabel?: string;
+  /** Full-width 3-column dashboard layout. */
+  wide?: boolean;
   onDesignComplete?: (design: DesignCompletePayload) => void;
 }
 
@@ -54,6 +56,7 @@ export function SystemDesigner({
   normalized,
   roofAreaOverrideSqM,
   drawnAreaLabel,
+  wide,
   onDesignComplete,
 }: SystemDesignerProps) {
   const { panels: dbPanels, isLoading: lp } = usePanels(true);
@@ -193,6 +196,200 @@ export function SystemDesigner({
     });
   };
 
+  const panelSelect = (
+    <Select
+      id="panel"
+      label="Solar Panel"
+      options={panelSelectOptions}
+      value={
+        useDb
+          ? panelKey
+          : String(Math.min(parseInt(panelKey, 10) || 0, PANEL_OPTIONS.length - 1))
+      }
+      onChange={(e) => setPanelKey(e.target.value)}
+    />
+  );
+  const batterySelect = (
+    <Select
+      id="battery"
+      label="Battery Storage"
+      options={batterySelectOptions}
+      value={batteryKey}
+      onChange={(e) => setBatteryKey(e.target.value)}
+    />
+  );
+  const inverterSelect = (
+    <Select
+      id="inverter"
+      label="Inverter"
+      options={inverterSelectOptions}
+      value={
+        useDb
+          ? inverterKey
+          : String(Math.min(parseInt(inverterKey, 10) || 0, INVERTER_OPTIONS.length - 1))
+      }
+      onChange={(e) => setInverterKey(e.target.value)}
+    />
+  );
+
+  const drawnBadge = roofAreaOverrideSqM != null && (
+    <div className="flex items-start gap-2 rounded-lg border border-amber-300/60 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-900/40 dark:bg-amber-950/20 dark:text-amber-200">
+      <PenLine className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+      <div className="space-y-0.5">
+        <p className="font-semibold">Using drawn area: {formatNumber(roofAreaOverrideSqM, 1)} m²</p>
+        {drawnAreaLabel && <p className="text-amber-800/80 dark:text-amber-300/80">{drawnAreaLabel}</p>}
+      </div>
+    </div>
+  );
+
+  const fallbackNote = !sp && normalized && (
+    <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-900/40 dark:bg-amber-950/20 dark:text-amber-200">
+      Roof area estimated at 50 m² (no rooftop data from {normalized.dataSource}). Google Solar API provides precise measurements.
+    </div>
+  );
+
+  // ─── Wide / horizontal "dashboard" layout ────────────────────────────────
+  if (wide) {
+    return (
+      <Card className="overflow-hidden">
+        <div className="h-1 w-full bg-gradient-to-r from-amber-400 via-amber-500 to-emerald-500" />
+        <CardHeader className="flex flex-row items-start justify-between gap-3 space-y-0 pb-3">
+          <div>
+            <CardTitle className="flex items-center gap-2">
+              <Calculator className="h-5 w-5 text-brand-500" />
+              System Designer
+            </CardTitle>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Pick equipment · see live specs and financials · generate a proposal
+            </p>
+          </div>
+          <div className="hidden items-baseline gap-2 md:flex">
+            <span className="text-[10px] uppercase tracking-wide text-muted-foreground">Yearly production</span>
+            <span className="font-mono text-lg font-bold tabular-nums text-amber-600">
+              {formatNumber(design.yearlyProductionKwh, 0)}
+            </span>
+            <span className="text-xs text-muted-foreground">kWh</span>
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-6">
+          {(fallbackNote || drawnBadge) && (
+            <div className="space-y-3">
+              {fallbackNote}
+              {drawnBadge}
+            </div>
+          )}
+
+          <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
+            {/* ── Equipment ── */}
+            <section className="space-y-3">
+              <h4 className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                <BatteryIcon className="h-3.5 w-3.5" />
+                Equipment
+              </h4>
+              <div className="space-y-3 rounded-xl border border-border bg-card/40 p-4">
+                {panelSelect}
+                {batterySelect}
+                {inverterSelect}
+              </div>
+            </section>
+
+            {/* ── System Specs ── */}
+            <section className="space-y-3">
+              <h4 className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                <Gauge className="h-3.5 w-3.5" />
+                System Specs
+              </h4>
+              <div className="grid grid-cols-3 gap-3">
+                <div className="rounded-xl border border-amber-200/60 bg-gradient-to-br from-amber-50 to-white p-3 dark:border-amber-900/30 dark:from-amber-950/30 dark:to-transparent">
+                  <div className="flex items-center gap-1 text-[10px] uppercase tracking-wide text-amber-700 dark:text-amber-300">
+                    <Sun className="h-3 w-3" />
+                    Panels
+                  </div>
+                  <p className="mt-1 font-mono text-xl font-bold tabular-nums text-foreground">
+                    {design.panelCount}
+                  </p>
+                </div>
+                <div className="rounded-xl border border-amber-200/60 bg-gradient-to-br from-amber-50 to-white p-3 dark:border-amber-900/30 dark:from-amber-950/30 dark:to-transparent">
+                  <div className="flex items-center gap-1 text-[10px] uppercase tracking-wide text-amber-700 dark:text-amber-300">
+                    <Gauge className="h-3 w-3" />
+                    System
+                  </div>
+                  <p className="mt-1 font-mono text-xl font-bold tabular-nums text-foreground">
+                    {formatNumber(design.systemSizeKw)} <span className="text-sm font-medium text-muted-foreground">kW</span>
+                  </p>
+                </div>
+                <div className="rounded-xl border border-amber-200/60 bg-gradient-to-br from-amber-50 to-white p-3 dark:border-amber-900/30 dark:from-amber-950/30 dark:to-transparent">
+                  <div className="flex items-center gap-1 text-[10px] uppercase tracking-wide text-amber-700 dark:text-amber-300">
+                    <Zap className="h-3 w-3" />
+                    Yearly
+                  </div>
+                  <p className="mt-1 font-mono text-xl font-bold tabular-nums text-foreground">
+                    {formatNumber(design.yearlyProductionKwh, 0)}
+                  </p>
+                  <p className="text-[10px] text-muted-foreground">kWh</p>
+                </div>
+              </div>
+              {onDesignComplete && (
+                <Button className="w-full" onClick={handleComplete}>
+                  <Zap className="mr-1.5 h-4 w-4" />
+                  Create Proposal from Design
+                </Button>
+              )}
+            </section>
+
+            {/* ── Financial Summary ── */}
+            <section className="space-y-3">
+              <h4 className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                <TrendingUp className="h-3.5 w-3.5" />
+                Financial Summary
+              </h4>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="rounded-xl border border-emerald-200/70 bg-gradient-to-br from-emerald-50 to-white p-3 dark:border-emerald-900/30 dark:from-emerald-950/30 dark:to-transparent">
+                  <div className="flex items-center gap-1 text-[10px] uppercase tracking-wide text-emerald-700 dark:text-emerald-300">
+                    <Wallet className="h-3 w-3" />
+                    Install cost
+                  </div>
+                  <p className="mt-1 font-mono text-lg font-bold tabular-nums text-emerald-900 dark:text-emerald-100">
+                    {formatCurrency(financials.installCost)}
+                  </p>
+                </div>
+                <div className="rounded-xl border border-emerald-200/70 bg-gradient-to-br from-emerald-50 to-white p-3 dark:border-emerald-900/30 dark:from-emerald-950/30 dark:to-transparent">
+                  <div className="flex items-center gap-1 text-[10px] uppercase tracking-wide text-emerald-700 dark:text-emerald-300">
+                    <TrendingUp className="h-3 w-3" />
+                    Annual savings
+                  </div>
+                  <p className="mt-1 font-mono text-lg font-bold tabular-nums text-emerald-900 dark:text-emerald-100">
+                    {formatCurrency(financials.annualSavings)}
+                  </p>
+                </div>
+                <div className="rounded-xl border border-emerald-200/70 bg-gradient-to-br from-emerald-50 to-white p-3 dark:border-emerald-900/30 dark:from-emerald-950/30 dark:to-transparent">
+                  <div className="flex items-center gap-1 text-[10px] uppercase tracking-wide text-emerald-700 dark:text-emerald-300">
+                    <Clock className="h-3 w-3" />
+                    Payback
+                  </div>
+                  <p className="mt-1 font-mono text-lg font-bold tabular-nums text-emerald-900 dark:text-emerald-100">
+                    {financials.paybackYears}
+                    <span className="ml-1 text-sm font-medium text-muted-foreground">yrs</span>
+                  </p>
+                </div>
+                <div className="rounded-xl border border-emerald-200/70 bg-gradient-to-br from-emerald-50 to-white p-3 dark:border-emerald-900/30 dark:from-emerald-950/30 dark:to-transparent">
+                  <div className="flex items-center gap-1 text-[10px] uppercase tracking-wide text-emerald-700 dark:text-emerald-300">
+                    <TrendingUp className="h-3 w-3" />
+                    25-yr ROI
+                  </div>
+                  <p className="mt-1 font-mono text-lg font-bold tabular-nums text-emerald-900 dark:text-emerald-100">
+                    {formatNumber(financials.roi25Year)}%
+                  </p>
+                </div>
+              </div>
+            </section>
+          </div>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  // ─── Original compact / narrow layout ────────────────────────────────────
   return (
     <Card>
       <CardHeader>
@@ -202,50 +399,12 @@ export function SystemDesigner({
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">
-        {!sp && normalized && (
-          <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-900/40 dark:bg-amber-950/20 dark:text-amber-200">
-            Roof area estimated at 50 m² (no rooftop data from {normalized.dataSource}). Google Solar API provides precise measurements.
-          </div>
-        )}
-        <Select
-          id="panel"
-          label="Solar Panel"
-          options={panelSelectOptions}
-          value={
-            useDb
-              ? panelKey
-              : String(Math.min(parseInt(panelKey, 10) || 0, PANEL_OPTIONS.length - 1))
-          }
-          onChange={(e) => setPanelKey(e.target.value)}
-        />
-        <Select
-          id="battery"
-          label="Battery Storage"
-          options={batterySelectOptions}
-          value={batteryKey}
-          onChange={(e) => setBatteryKey(e.target.value)}
-        />
-        <Select
-          id="inverter"
-          label="Inverter"
-          options={inverterSelectOptions}
-          value={
-            useDb
-              ? inverterKey
-              : String(Math.min(parseInt(inverterKey, 10) || 0, INVERTER_OPTIONS.length - 1))
-          }
-          onChange={(e) => setInverterKey(e.target.value)}
-        />
+        {fallbackNote}
+        {panelSelect}
+        {batterySelect}
+        {inverterSelect}
 
-        {roofAreaOverrideSqM != null && (
-          <div className="flex items-start gap-2 rounded-lg border border-amber-300/60 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-900/40 dark:bg-amber-950/20 dark:text-amber-200">
-            <PenLine className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-            <div className="space-y-0.5">
-              <p className="font-semibold">Using drawn area: {formatNumber(roofAreaOverrideSqM, 1)} m²</p>
-              {drawnAreaLabel && <p className="text-amber-800/80 dark:text-amber-300/80">{drawnAreaLabel}</p>}
-            </div>
-          </div>
-        )}
+        {drawnBadge}
 
         <div className="border-t border-border pt-4 space-y-3">
           <h4 className="text-sm font-semibold text-foreground">System Specs</h4>

@@ -171,8 +171,9 @@ function SolarPageInner() {
         )}
       </div>
 
+      {/* Top row: map (2/3) + Building Insights / side panel (1/3) */}
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
-        <div className="space-y-6 lg:col-span-2">
+        <div className="space-y-4 lg:col-span-2">
           <SolarMap
             onSearchNavigate={handleSearchNavigate}
             onAddressResolved={setAddress}
@@ -221,15 +222,6 @@ function SolarPageInner() {
             </div>
           )}
 
-          {isLoading && (
-            <Card>
-              <CardContent className="py-8">
-                <Loading size="lg" className="mb-2" />
-                <p className="text-center text-sm text-muted-foreground">Analyzing solar potential...</p>
-              </CardContent>
-            </Card>
-          )}
-
           {solarFetchFailed && (
             <div
               role="alert"
@@ -247,38 +239,20 @@ function SolarPageInner() {
             >
               <p className="font-medium">No roof segments in the drawn area</p>
               <p className="mt-1 text-amber-900/90">
-                Move or enlarge the rectangle so it overlaps the roof on the map, then release to refresh the
-                analysis for that region.
+                Move or enlarge the polygon so it overlaps the roof on the map — the analysis will refresh
+                automatically.
               </p>
             </div>
           )}
-
-          {displayInsights && <SolarHeatmap insights={displayInsights} />}
         </div>
 
         <div className="space-y-6">
           {(displayInsights || hasNonGoogleData) ? (
-            <>
-              <BuildingInsightsPanel
-                insights={displayInsights ?? undefined}
-                normalized={normalized}
-                provider={provider}
-              />
-              <SystemDesigner
-                insights={displayInsights ?? undefined}
-                normalized={normalized}
-                roofAreaOverrideSqM={region ? region.areaM2 * usableFraction : undefined}
-                drawnAreaLabel={
-                  region
-                    ? `${region.areaM2.toFixed(1)} m² drawn · ${Math.round(usableFraction * 100)}% usable`
-                    : undefined
-                }
-                onDesignComplete={(d) => {
-                  setDesignPayload(d);
-                  setProposalOpen(true);
-                }}
-              />
-            </>
+            <BuildingInsightsPanel
+              insights={displayInsights ?? undefined}
+              normalized={normalized}
+              provider={provider}
+            />
           ) : solarFetchFailed ? (
             <Card>
               <CardContent className="py-12 text-center">
@@ -309,6 +283,38 @@ function SolarPageInner() {
           )}
         </div>
       </div>
+
+      {/* Heatmap — full width */}
+      {displayInsights && <SolarHeatmap insights={displayInsights} />}
+
+      {/* Loading card under the fold, full-width while insights are fetching */}
+      {isLoading && !displayInsights && !hasNonGoogleData && (
+        <Card>
+          <CardContent className="py-8">
+            <Loading size="lg" className="mb-2" />
+            <p className="text-center text-sm text-muted-foreground">Analyzing solar potential...</p>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* System Designer — full width below the map so it uses horizontal space */}
+      {(displayInsights || hasNonGoogleData) && (
+        <SystemDesigner
+          insights={displayInsights ?? undefined}
+          normalized={normalized}
+          roofAreaOverrideSqM={region ? region.areaM2 * usableFraction : undefined}
+          drawnAreaLabel={
+            region
+              ? `${region.areaM2.toFixed(1)} m² drawn · ${Math.round(usableFraction * 100)}% usable`
+              : undefined
+          }
+          wide
+          onDesignComplete={(d) => {
+            setDesignPayload(d);
+            setProposalOpen(true);
+          }}
+        />
+      )}
 
       {(displayInsights || hasNonGoogleData) && designPayload && location && (
         <CreateProposalDialog
