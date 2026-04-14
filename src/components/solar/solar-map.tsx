@@ -6,7 +6,7 @@ import {
   useJsApiLoader,
   Marker,
   Polygon,
-  DrawingManager,
+  Polyline,
 } from "@react-google-maps/api";
 import { Loading } from "@/components/ui/loading";
 import {
@@ -19,6 +19,8 @@ import {
   Grid3x3,
   Zap,
   Sun,
+  Check,
+  Undo2,
 } from "lucide-react";
 import { polygonBBox, samplePanelGrid, isSelfIntersecting, type PanelGridRect } from "@/lib/geometry";
 import { formatNumber } from "@/lib/utils";
@@ -84,7 +86,7 @@ interface SolarMapProps {
   panelHeightM?: number;
 }
 
-const libraries: ("places" | "drawing" | "geometry")[] = ["places", "drawing", "geometry"];
+const libraries: ("places" | "geometry")[] = ["places", "geometry"];
 
 // Floating toolbar button style helpers
 const toolbarBtn = (active?: boolean) =>
@@ -121,6 +123,8 @@ export function SolarMap({
 
   const [searchValue, setSearchValue] = useState("");
   const [drawMode, setDrawMode] = useState(false);
+  const [drawingVertices, setDrawingVertices] = useState<{ lat: number; lng: number }[]>([]);
+  const [hoverPoint, setHoverPoint] = useState<{ lat: number; lng: number } | null>(null);
   const [viewCenter, setViewCenter] = useState<{ lat: number; lng: number } | null>(null);
   const [viewZoom, setViewZoom] = useState(12);
   const [selfIntersectError, setSelfIntersectError] = useState(false);
@@ -138,13 +142,12 @@ export function SolarMap({
 
   const hasSelection = Boolean(selectedLocation || regionPolygon);
 
-  // Escape key cancels draw mode
+  // Reset the in-progress ring whenever we leave draw mode.
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && drawMode) setDrawMode(false);
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    if (!drawMode) {
+      setDrawingVertices([]);
+      setHoverPoint(null);
+    }
   }, [drawMode]);
 
   useEffect(() => {
@@ -228,12 +231,27 @@ export function SolarMap({
 
   const handleMapClick = useCallback(
     (e: google.maps.MapMouseEvent) => {
-      if (drawMode || !e.latLng) return;
+      if (!e.latLng) return;
+      if (drawMode) {
+        setSelfIntersectError(false);
+        const lat = e.latLng.lat();
+        const lng = e.latLng.lng();
+        setDrawingVertices((prev) => [...prev, { lat, lng }]);
+        return;
+      }
       const lat = e.latLng.lat();
       const lng = e.latLng.lng();
       onLocationPin?.(lat, lng);
     },
     [drawMode, onLocationPin]
+  );
+
+  const handleMapMouseMove = useCallback(
+    (e: google.maps.MapMouseEvent) => {
+      if (!drawMode || !e.latLng) return;
+      setHoverPoint({ lat: e.latLng.lat(), lng: e.latLng.lng() });
+    },
+    [drawMode]
   );
 
   /** Extract vertices from a google Polygon path, compute area + bbox, emit. */
@@ -268,25 +286,62 @@ export function SolarMap({
     pathListenersRef.current = [];
   }, []);
 
-  const onPolygonComplete = useCallback(
-    (poly: google.maps.Polygon) => {
-      const path = poly.getPath();
-      const region = buildRegionFromPath(path);
-      poly.setMap(null);
+  const finishDrawing = useCallback(
+    (vertices: { lat: number; lng: number }[]) => {
+      if (vertices.length < 3) return;
+      if (isSelfIntersecting(vertices)) {
+        setSelfIntersectError(true);
+        return;
+      }
+      let areaM2 = 0;
+      if (
+        typeof google !== "undefined" &&
+        google.maps?.geometry?.spherical?.computeArea
+      ) {
+        const path = vertices.map((v) => new google.maps.LatLng(v.lat, v.lng));
+        areaM2 = google.maps.geometry.spherical.computeArea(path);
+      }
+      const bbox = polygonBBox(vertices);
+      const region: RegionPolygon = { vertices, areaM2, bbox };
       setDrawMode(false);
-      if (region && onRegionChange) {
-        onRegionChange(region);
-        if (mapRef.current) {
-          const b = new google.maps.LatLngBounds(
-            { lat: region.bbox.south, lng: region.bbox.west },
-            { lat: region.bbox.north, lng: region.bbox.east }
-          );
-          mapRef.current.fitBounds(b, 60);
-        }
+      setDrawingVertices([]);
+      setHoverPoint(null);
+      onRegionChange?.(region);
+      if (mapRef.current && typeof google !== "undefined") {
+        const b = new google.maps.LatLngBounds(
+          { lat: bbox.south, lng: bbox.west },
+          { lat: bbox.north, lng: bbox.east }
+        );
+        mapRef.current.fitBounds(b, 60);
       }
     },
-    [buildRegionFromPath, onRegionChange]
+    [onRegionChange]
   );
+
+  const undoLastVertex = useCallback(() => {
+    setDrawingVertices((prev) => prev.slice(0, -1));
+    setSelfIntersectError(false);
+  }, []);
+
+  // Keyboard shortcuts while drawing: Esc cancels, Enter finishes, Backspace undoes.
+  useEffect(() => {
+    if (!drawMode) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        setDrawMode(false);
+      } else if (e.key === "Enter") {
+        e.preventDefault();
+        if (drawingVertices.length >= 3) finishDrawing(drawingVertices);
+      } else if (e.key === "Backspace" || e.key === "Delete") {
+        if ((e.target as HTMLElement | null)?.tagName === "INPUT") return;
+        e.preventDefault();
+        setDrawingVertices((v) => v.slice(0, -1));
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [drawMode, drawingVertices, finishDrawing]);
 
   const handlePersistedPolygonLoad = useCallback(
     (poly: google.maps.Polygon) => {
@@ -337,12 +392,33 @@ export function SolarMap({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isLoaded]); // only recomputes once when the API loads
 
-  // Apply draggableCursor directly on the map instance instead of via the options prop
-  // so we never trigger a full setOptions() call (and re-flash the controls) on mode change.
+  // Apply draggableCursor + zoom lock directly on the map instance instead of via the options
+  // prop so we never trigger a full setOptions() call (and re-flash the controls) on mode change.
+  // During draw mode we pin the zoom level so an accidental scroll-wheel or double-tap doesn't
+  // move the map out from under the drawing.
   useEffect(() => {
-    mapRef.current?.setOptions({
-      draggableCursor: drawMode ? "crosshair" : onLocationPin ? "pointer" : undefined,
-    });
+    const map = mapRef.current;
+    if (!map) return;
+    if (drawMode) {
+      const z = map.getZoom() ?? 20;
+      map.setOptions({
+        draggableCursor: "crosshair",
+        minZoom: z,
+        maxZoom: z,
+        zoomControl: false,
+        scrollwheel: false,
+        disableDoubleClickZoom: true,
+      });
+    } else {
+      map.setOptions({
+        draggableCursor: onLocationPin ? "pointer" : undefined,
+        minZoom: undefined,
+        maxZoom: undefined,
+        zoomControl: true,
+        scrollwheel: true,
+        disableDoubleClickZoom: false,
+      });
+    }
   }, [drawMode, onLocationPin]);
 
   // Compute the virtual panel grid using Google's accurate containsLocation.
@@ -413,7 +489,13 @@ export function SolarMap({
                 <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-amber-400 opacity-75" />
                 <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-amber-400" />
               </span>
-              <span className="text-sm font-medium">Click to place vertices · double-click to finish</span>
+              <span className="text-sm font-medium">
+                {drawingVertices.length === 0
+                  ? "Click to place your first point"
+                  : drawingVertices.length < 3
+                  ? `${drawingVertices.length} point${drawingVertices.length === 1 ? "" : "s"} · keep clicking to add more`
+                  : `${drawingVertices.length} points · click the green dot or press Finish to close`}
+              </span>
               <span className="text-xs text-white/50">·</span>
               <span className="rounded bg-white/10 px-1.5 py-0.5 text-xs font-mono text-white/70">Esc</span>
               <span className="text-xs text-white/70">to cancel</span>
@@ -461,6 +543,37 @@ export function SolarMap({
                   Draw area
                 </>
               )}
+            </button>
+          )}
+
+          {/* Finish — only while drawing, enabled once 3+ vertices */}
+          {drawMode && (
+            <button
+              type="button"
+              onClick={() => finishDrawing(drawingVertices)}
+              disabled={drawingVertices.length < 3}
+              className={`${toolbarBtn(drawingVertices.length >= 3)} disabled:cursor-not-allowed disabled:opacity-40`}
+              title={
+                drawingVertices.length < 3
+                  ? "Place at least 3 points"
+                  : "Finish polygon (Enter)"
+              }
+            >
+              <Check className="h-4 w-4" />
+              Finish
+            </button>
+          )}
+
+          {/* Undo last vertex — only while drawing */}
+          {drawMode && drawingVertices.length > 0 && (
+            <button
+              type="button"
+              onClick={undoLastVertex}
+              className={toolbarBtn()}
+              title="Remove last point (Backspace)"
+            >
+              <Undo2 className="h-4 w-4 text-gray-500" />
+              Undo
             </button>
           )}
 
@@ -586,7 +699,8 @@ export function SolarMap({
           zoom={mapZoom}
           onLoad={onMapLoad}
           onIdle={handleIdle}
-          onClick={onLocationPin ? handleMapClick : undefined}
+          onClick={drawMode || onLocationPin ? handleMapClick : undefined}
+          onMouseMove={drawMode ? handleMapMouseMove : undefined}
           options={mapOptions}
         >
           {/* Analysis point marker */}
@@ -608,26 +722,112 @@ export function SolarMap({
             />
           )}
 
-          {/* Drawing manager — active only in draw mode */}
-          {drawMode && onRegionChange && typeof google !== "undefined" && google.maps?.drawing && (
-            <DrawingManager
-              key="drawing-active"
+          {/* ── In-progress drawing: filled preview, edges, rubber-band, vertex markers ── */}
+          {drawMode && drawingVertices.length >= 3 && (
+            <Polygon
+              key="drawing-preview-fill"
+              paths={drawingVertices}
               options={{
-                drawingControl: false,
-                polygonOptions: {
-                  fillColor: "#f59e0b",
-                  fillOpacity: 0.18,
-                  strokeColor: "#f59e0b",
-                  strokeWeight: 2.5,
-                  clickable: false,
-                  editable: false,
-                  zIndex: 1,
-                },
+                fillColor: "#f59e0b",
+                fillOpacity: 0.18,
+                strokeColor: "#f59e0b",
+                strokeWeight: 2.5,
+                strokeOpacity: 0.95,
+                clickable: false,
+                zIndex: 1,
               }}
-              drawingMode={google.maps.drawing.OverlayType.POLYGON}
-              onPolygonComplete={onPolygonComplete}
             />
           )}
+          {drawMode && drawingVertices.length >= 2 && drawingVertices.length < 3 && (
+            <Polyline
+              key="drawing-preview-line"
+              path={drawingVertices}
+              options={{
+                strokeColor: "#f59e0b",
+                strokeWeight: 2.5,
+                strokeOpacity: 0.95,
+                clickable: false,
+                zIndex: 1,
+              }}
+            />
+          )}
+          {/* Rubber-band from last vertex to hover point */}
+          {drawMode && drawingVertices.length > 0 && hoverPoint && (
+            <Polyline
+              key="drawing-rubber-band"
+              path={[drawingVertices[drawingVertices.length - 1], hoverPoint]}
+              options={{
+                strokeColor: "#f59e0b",
+                strokeOpacity: 0,
+                strokeWeight: 2,
+                clickable: false,
+                zIndex: 1,
+                icons: [
+                  {
+                    icon: {
+                      path: "M 0,-1 0,1",
+                      strokeOpacity: 0.9,
+                      strokeColor: "#f59e0b",
+                      scale: 2,
+                    },
+                    offset: "0",
+                    repeat: "8px",
+                  },
+                ],
+              }}
+            />
+          )}
+          {/* Closing preview (dashed green) from last vertex back to first — only once 3+ points */}
+          {drawMode && drawingVertices.length >= 3 && (
+            <Polyline
+              key="drawing-close-preview"
+              path={[drawingVertices[drawingVertices.length - 1], drawingVertices[0]]}
+              options={{
+                strokeColor: "#10b981",
+                strokeOpacity: 0,
+                strokeWeight: 2,
+                clickable: false,
+                zIndex: 1,
+                icons: [
+                  {
+                    icon: {
+                      path: "M 0,-1 0,1",
+                      strokeOpacity: 0.9,
+                      strokeColor: "#10b981",
+                      scale: 2,
+                    },
+                    offset: "0",
+                    repeat: "8px",
+                  },
+                ],
+              }}
+            />
+          )}
+          {/* Vertex markers — first vertex is a larger green "close" target once 3+ points exist */}
+          {drawMode &&
+            typeof google !== "undefined" &&
+            drawingVertices.map((v, i) => {
+              const isFirst = i === 0;
+              const canClose = isFirst && drawingVertices.length >= 3;
+              return (
+                <Marker
+                  key={`dv-${i}`}
+                  position={v}
+                  clickable={canClose}
+                  onClick={canClose ? () => finishDrawing(drawingVertices) : undefined}
+                  title={canClose ? "Click to close the polygon" : undefined}
+                  zIndex={5}
+                  icon={{
+                    path: google.maps.SymbolPath.CIRCLE,
+                    scale: canClose ? 10 : 6,
+                    fillColor: canClose ? "#10b981" : "#f59e0b",
+                    fillOpacity: 1,
+                    strokeColor: "#ffffff",
+                    strokeWeight: 2,
+                  }}
+                />
+              );
+            })}
 
           {/* Persisted polygon — editable and draggable */}
           {regionPolygon && !drawMode && (
