@@ -121,7 +121,7 @@ export function SolarMap({
     libraries,
   });
 
-  const [searchValue, setSearchValue] = useState("");
+  const [searchValue, setSearchValue] = useState(() => initialGeocodeAddress?.trim() ?? "");
   const [drawMode, setDrawMode] = useState(false);
   const [drawingVertices, setDrawingVertices] = useState<{ lat: number; lng: number }[]>([]);
   const [hoverPoint, setHoverPoint] = useState<{ lat: number; lng: number } | null>(null);
@@ -133,10 +133,11 @@ export function SolarMap({
   const inputRef = useRef<HTMLInputElement>(null);
   const polygonRef = useRef<google.maps.Polygon | null>(null);
   const pathListenersRef = useRef<google.maps.MapsEventListener[]>([]);
-  const geocodeDoneRef = useRef(false);
-  const geocodeTargetRef = useRef(initialGeocodeAddress);
-  geocodeTargetRef.current = initialGeocodeAddress;
+  const lastInitialGeocodeRef = useRef<string | null>(null);
 
+  const selectedLat = selectedLocation?.lat;
+  const selectedLng = selectedLocation?.lng;
+  const hasSelectedLocation = selectedLat != null && selectedLng != null;
   const mapCenter = selectedLocation ?? viewCenter ?? DEFAULT_CENTER;
   const mapZoom = selectedLocation ? 20 : viewZoom;
 
@@ -151,11 +152,11 @@ export function SolarMap({
   }, [drawMode]);
 
   useEffect(() => {
-    if (selectedLocation) {
-      setViewCenter(selectedLocation);
+    if (hasSelectedLocation) {
+      setViewCenter({ lat: selectedLat, lng: selectedLng });
       setViewZoom(20);
     }
-  }, [selectedLocation?.lat, selectedLocation?.lng]);
+  }, [hasSelectedLocation, selectedLat, selectedLng]);
 
   // Auto-dismiss the self-intersect toast after a few seconds.
   useEffect(() => {
@@ -164,31 +165,45 @@ export function SolarMap({
     return () => clearTimeout(t);
   }, [selfIntersectError]);
 
+  const geocodeInitialAddress = useCallback(
+    (map: google.maps.Map) => {
+      const addr = initialGeocodeAddress?.trim();
+      if (!addr || hasSelectedLocation || typeof google === "undefined") return;
+      if (lastInitialGeocodeRef.current === addr) return;
+
+      lastInitialGeocodeRef.current = addr;
+      const geocoder = new google.maps.Geocoder();
+      geocoder.geocode({ address: addr }, (results, status) => {
+        if (status !== "OK" || !results?.[0]?.geometry?.location) {
+          lastInitialGeocodeRef.current = null;
+          return;
+        }
+        const loc = results[0].geometry.location;
+        const lat = loc.lat();
+        const lng = loc.lng();
+        setViewCenter({ lat, lng });
+        setViewZoom(20);
+        map.panTo({ lat, lng });
+        map.setZoom(20);
+        const formatted = results[0].formatted_address || addr;
+        setSearchValue(formatted);
+        onAddressResolved?.(formatted);
+        onLocationPin?.(lat, lng);
+      });
+    },
+    [hasSelectedLocation, initialGeocodeAddress, onAddressResolved, onLocationPin]
+  );
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    geocodeInitialAddress(map);
+  }, [geocodeInitialAddress, initialGeocodeAddress]);
+
   const onMapLoad = useCallback(
     (map: google.maps.Map) => {
       mapRef.current = map;
-
-      const addr = geocodeTargetRef.current?.trim();
-      if (addr && !geocodeDoneRef.current && !selectedLocation && typeof google !== "undefined") {
-        geocodeDoneRef.current = true;
-        const geocoder = new google.maps.Geocoder();
-        geocoder.geocode({ address: addr }, (results, status) => {
-          if (status !== "OK" || !results?.[0]?.geometry?.location) {
-            geocodeDoneRef.current = false;
-            return;
-          }
-          const loc = results[0].geometry!.location!;
-          const lat = loc.lat();
-          const lng = loc.lng();
-          setViewCenter({ lat, lng });
-          setViewZoom(20);
-          map.panTo({ lat, lng });
-          map.setZoom(20);
-          const formatted = results[0].formatted_address || addr;
-          setSearchValue(formatted);
-          onAddressResolved?.(formatted);
-        });
-      }
+      geocodeInitialAddress(map);
 
       if (inputRef.current) {
         autocompleteRef.current = new google.maps.places.Autocomplete(inputRef.current, {
@@ -211,7 +226,7 @@ export function SolarMap({
         });
       }
     },
-    [onAddressResolved, onSearchNavigate, selectedLocation]
+    [geocodeInitialAddress, onAddressResolved, onSearchNavigate]
   );
 
   const handleIdle = useCallback(() => {
@@ -370,7 +385,7 @@ export function SolarMap({
   const handleClear = useCallback(() => {
     onRegionChange?.(null);
     onPanelGridToggle?.(false);
-    onLocationPin && onSearchNavigate?.();
+    if (onLocationPin) onSearchNavigate?.();
   }, [onRegionChange, onPanelGridToggle, onLocationPin, onSearchNavigate]);
 
   // Memoize static map options so @react-google-maps/api never calls setOptions()
@@ -389,7 +404,6 @@ export function SolarMap({
       fullscreenControl: true,
       fullscreenControlOptions: { position: google.maps.ControlPosition.TOP_RIGHT },
     };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isLoaded]); // only recomputes once when the API loads
 
   // Apply draggableCursor + zoom lock directly on the map instance instead of via the options
